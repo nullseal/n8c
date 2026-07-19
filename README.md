@@ -1,6 +1,10 @@
 # n8c
 
-### Version control and a safety net for your n8n — built for the age of AI-edited workflows.
+**Version control and a safety net for your n8n — built for the age of AI-edited workflows.**
+
+🔗 **[Website & docs](https://nullseal.github.io/n8c)** · 📦 **[npm](https://www.npmjs.com/package/n8c)** · 🐙 **[GitHub](https://github.com/nullseal/n8c)** · ⚖️ [MIT](LICENSE)
+
+---
 
 AI agents can build and change n8n workflows at incredible speed. They can also silently overwrite a
 node, drop a prompt, or break a flow you can't easily reconstruct — and while n8n keeps per-workflow
