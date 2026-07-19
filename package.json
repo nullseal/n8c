@@ -1,5 +1,5 @@
 {
-  "name": "n8c",
+  "name": "@nullseal/n8c",
   "version": "0.1.0",
   "description": "Terraform-style, code-first CLI to version and deploy n8n workflows, prompts and credentials from a database.",
   "type": "module",
@@ -34,6 +34,9 @@
   "homepage": "https://github.com/nullseal/n8c#readme",
   "bugs": {
     "url": "https://github.com/nullseal/n8c/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node --test",
