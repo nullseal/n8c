@@ -33,6 +33,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages (build type = GitHub Actions) on first run, so you
+          # don't have to toggle it in Settings first. Avoids the "Get Pages site
+          # failed / Not Found" error when Pages hasn't been enabled yet.
+          enablement: true
       - name: Upload docs/ as the Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
