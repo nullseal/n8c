@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>n8c — Terraform-style CLI for n8n</title>
+<meta name="description" content="Version your n8n workflows, prompts and credentials as code. A plan/apply loop over n8n's Public API, with full version history in a database.">
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-soft: #161b22;
+    --bg-card: #161b22;
+    --border: #21262d;
+    --text: #e6edf3;
+    --text-dim: #9198a1;
+    --accent: #ea4b71;
+    --accent-soft: rgba(234, 75, 113, 0.12);
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --amber: #d29922;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --maxw: 1080px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  /* Nav */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(13, 17, 23, 0.85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.15rem; letter-spacing: -0.02em; }
+  .brand .logo {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #b83b5e);
+    display: grid; place-items: center; color: #fff; font-family: var(--mono); font-weight: 700; font-size: 0.85rem;
+  }
+  .nav-links { display: flex; gap: 26px; align-items: center; }
+  .nav-links a { color: var(--text-dim); font-size: 0.92rem; font-weight: 500; }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .nav-links a.gh { color: var(--text); }
+  @media (max-width: 720px) { .nav-links a:not(.gh) { display: none; } }
+
+  /* Hero */
+  .hero { padding: 90px 0 70px; text-align: center; position: relative; overflow: hidden; }
+  .hero::before {
+    content: ""; position: absolute; top: -180px; left: 50%; transform: translateX(-50%);
+    width: 720px; height: 420px; background: radial-gradient(ellipse at center, var(--accent-soft), transparent 70%);
+    pointer-events: none;
+  }
+  .badge {
+    display: inline-block; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px;
+    font-size: 0.8rem; color: var(--text-dim); margin-bottom: 26px; background: var(--bg-soft);
+  }
+  .badge b { color: var(--accent); }
+  .hero h1 { font-size: clamp(2.4rem, 6vw, 4rem); line-height: 1.05; letter-spacing: -0.03em; font-weight: 800; }
+  .hero h1 .grad { background: linear-gradient(120deg, var(--accent), #f0836f); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p.lead { max-width: 640px; margin: 22px auto 0; font-size: 1.2rem; color: var(--text-dim); }
+  .cta { display: flex; gap: 14px; justify-content: center; margin-top: 38px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 9px;
+    font-weight: 600; font-size: 0.95rem; border: 1px solid var(--border); cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #d43e63; text-decoration: none; }
+  .btn.ghost { background: var(--bg-soft); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--text-dim); text-decoration: none; }
+
+  .hero-cmd {
+    max-width: 560px; margin: 44px auto 0; text-align: left;
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  }
+  .hero-cmd .bar { display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .hero-cmd .dot { width: 11px; height: 11px; border-radius: 50%; background: #30363d; }
+  .hero-cmd pre { padding: 18px 20px; overflow-x: auto; }
+  .hero-cmd code { font-size: 0.9rem; line-height: 1.9; }
+  .tok-c { color: var(--text-dim); }   /* comment */
+  .tok-p { color: var(--accent); }      /* prompt $ */
+  .tok-k { color: var(--green); }       /* command */
+
+  /* Sections */
+  section { padding: 64px 0; border-top: 1px solid var(--border); }
+  section h2 { font-size: 1.9rem; letter-spacing: -0.02em; font-weight: 700; margin-bottom: 10px; }
+  section .sub { color: var(--text-dim); font-size: 1.05rem; margin-bottom: 40px; max-width: 640px; }
+  .eyebrow { color: var(--accent); font-weight: 600; font-size: 0.85rem; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: #30363d; transform: translateY(-2px); }
+  .card .ic { width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); display: grid; place-items: center; margin-bottom: 16px; font-size: 1.3rem; }
+  .card h3 { font-size: 1.1rem; margin-bottom: 8px; }
+  .card p { color: var(--text-dim); font-size: 0.95rem; }
+
+  /* Steps */
+  .steps { display: flex; flex-direction: column; gap: 0; }
+  .step { display: grid; grid-template-columns: 56px 1fr; gap: 22px; position: relative; padding-bottom: 34px; }
+  .step:not(:last-child)::before { content: ""; position: absolute; left: 27px; top: 52px; bottom: 0; width: 2px; background: var(--border); }
+  .step .num {
+    width: 54px; height: 54px; border-radius: 50%; background: var(--bg-soft); border: 1px solid var(--border);
+    display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 1.25rem; color: var(--accent); z-index: 1;
+  }
+  .step .body { padding-top: 4px; min-width: 0; }
+  .step h3 { font-size: 1.2rem; margin-bottom: 6px; }
+  .step p { color: var(--text-dim); margin-bottom: 14px; }
+
+  /* Code block */
+  .codeblock { position: relative; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; margin-top: 4px; }
+  .codeblock pre { padding: 16px 18px; overflow-x: auto; }
+  .codeblock code { font-size: 0.88rem; line-height: 1.75; color: var(--text); white-space: pre; }
+  .copy-btn {
+    position: absolute; top: 10px; right: 10px; padding: 5px 11px; font-size: 0.75rem; font-weight: 600;
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); cursor: pointer;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+  .copy-btn.ok { color: var(--green); border-color: var(--green); }
+
+  /* Command table */
+  table.cmds { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  table.cmds td { padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.cmds tr:last-child td { border-bottom: none; }
+  table.cmds td.c { font-family: var(--mono); color: var(--accent); white-space: nowrap; width: 1%; }
+  table.cmds td.d { color: var(--text-dim); }
+  .table-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .table-scroll { overflow-x: auto; }
+
+  /* Comparison table */
+  table.cmp { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  table.cmp th { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--border); color: var(--text); font-weight: 700; white-space: nowrap; }
+  table.cmp th:first-child { color: var(--text-dim); font-weight: 600; }
+  table.cmp td { padding: 11px 16px; border-bottom: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+  table.cmp tr:last-child td { border-bottom: none; }
+  table.cmp td:first-child { color: var(--text); font-weight: 500; }
+  table.cmp td.ok { color: var(--green); }
+  table.cmp td.no { color: var(--text-dim); }
+
+  /* Callout */
+  .callout { display: flex; gap: 14px; background: var(--bg-soft); border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; padding: 18px 20px; margin-top: 26px; }
+  .callout .ci { font-size: 1.2rem; }
+  .callout p { color: var(--text-dim); font-size: 0.94rem; }
+  .callout b { color: var(--text); }
+
+  /* Two-col concepts */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  ul.clean { list-style: none; }
+  ul.clean li { padding: 9px 0 9px 26px; position: relative; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+  ul.clean li:last-child { border-bottom: none; }
+  ul.clean li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+  ul.clean li b { color: var(--text); font-weight: 600; }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--text-dim); font-size: 0.9rem; }
+  .foot-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
+  .foot-links { display: flex; gap: 22px; }
+  .pill { display: inline-block; font-family: var(--mono); font-size: 0.78rem; padding: 2px 9px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <div class="brand"><span class="logo">n8c</span> n8c</div>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#backends">Backends</a>
+      <a href="#concepts">Concepts</a>
+      <a href="#commands">Commands</a>
+      <a href="#roadmap">Roadmap</a>
+      <a class="gh" href="https://github.com/nullseal/n8c" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <span class="badge">A safety net for <b>AI-edited n8n</b> · no build step · MIT</span>
+    <h1>Let AI edit your n8n —<br>without&nbsp;<span class="grad">losing work</span>.</h1>
+    <p class="lead">AI agents build n8n flows fast — and can just as fast overwrite a node or break a workflow you can't rebuild. n8c keeps your <b>workflows, prompts and credentials</b> as versioned code, deploys them with a <code>plan</code>&nbsp;/&nbsp;<code>apply</code> loop, and rolls the whole instance back to a known-good release in one command.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quickstart">Get started</a>
+      <a class="btn ghost" href="https://github.com/nullseal/n8c" target="_blank" rel="noopener">★ View on GitHub</a>
+    </div>
+    <div class="hero-cmd">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <pre><code><span class="tok-c"># snapshot → let AI edit → review → ship → roll back if needed</span>
+<span class="tok-p">$</span> <span class="tok-k">n8c</span> pull              <span class="tok-c"># live n8n → versioned files</span>
+<span class="tok-p">$</span> <span class="tok-k">n8c</span> plan              <span class="tok-c"># diff files vs live — no surprises</span>
+<span class="tok-p">$</span> <span class="tok-k">n8c</span> apply             <span class="tok-c"># deploy; every apply is a release</span>
+<span class="tok-p">$</span> <span class="tok-k">n8c</span> restore <span class="tok-k">&lt;rel&gt;</span>   <span class="tok-c"># broke something? one-command rollback</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="eyebrow">Why n8c</div>
+    <h2>The UI is great for building. Undo is the hard part.</h2>
+    <p class="sub">n8n keeps per-workflow revisions, but with a pile of history entries, no diff, no cross-workflow view, and no way to roll the whole instance back to a known-good point, undoing a bad change — especially one an AI made — is painful. n8c is the safety net.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ic">🤖</div>
+        <h3>A safety net for AI</h3>
+        <p>Let an AI edit your automation freely. Every <code>apply</code> is a restorable release, so <code>n8c restore &lt;release&gt;</code> returns the whole instance — workflows, prompts and credentials together — to a point you know was good.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🙈</div>
+        <h3>Secrets your AI never sees</h3>
+        <p>Credential values live only in your <code>.env</code>, resolved from <code>process.env</code> at deploy time — never in a file, never committed, never in the directory the agent works in. Code holds only <code>process.env.MY_TOKEN</code>.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🔐</div>
+        <h3>Encrypted at rest</h3>
+        <p>Before a credential reaches the database it's encrypted with AES-256-GCM (<code>N8C_CREDENTIAL_ENCRYPTION_KEY</code>) — never persisted in plaintext.</p>
+      </div>
+      <div class="card">
+        <div class="ic">🧭</div>
+        <h3>Staging → prod, same files</h3>
+        <p>Entities use env-neutral IDs and n8c <b>auto-maps</b> each environment's real n8n and credential IDs. Build on staging, then <code>n8c -e prod apply</code> the exact same files — no hand-editing IDs.</p>
+      </div>
+      <div class="card">
+        <div class="ic">📐</div>
+        <h3>Real plan / apply</h3>
+        <p><code>plan</code> diffs your files against live n8n and freezes the actions; <code>apply</code> pushes to n8n <em>before</em> recording success, so a failed deploy never leaves a false "deployed" state.</p>
+      </div>
+      <div class="card">
+        <div class="ic">⚡</div>
+        <h3>No build step, no server needed</h3>
+        <p>Runs its TypeScript sources directly on modern Node — no compile. Store history in <b>MongoDB</b> for teams, or in a single <b>SQLite</b> file (built-in <code>node:sqlite</code>) with zero setup.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="requirements">
+  <div class="wrap">
+    <div class="eyebrow">Before you start</div>
+    <h2>Requirements</h2>
+    <div class="table-wrap" style="margin-top:24px">
+      <div class="table-scroll">
+      <table class="cmds">
+        <tr><td class="c">Node.js ≥ 22.18</td><td class="d">Or ≥ 23.6. n8c ships TypeScript and relies on Node's built-in type stripping, enabled by default from these versions. On 22.6–22.17 use the <code>--experimental-strip-types</code> flag.</td></tr>
+        <tr><td class="c">A database</td><td class="d"><b>MongoDB</b> (teams / shared instances) <b>or SQLite</b> (a single local file, zero setup via built-in <code>node:sqlite</code>). See <a href="#backends">Storage backends</a>.</td></tr>
+        <tr><td class="c">n8n</td><td class="d">With the <b>Public API</b> enabled (API 1.1.x) and an API key.</td></tr>
+      </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <div class="eyebrow">Quickstart</div>
+    <h2>From zero to deployed in five steps</h2>
+    <p class="sub">Install once, point n8c at your n8n instance and a database (MongoDB or SQLite), and you're running the full loop.</p>
+
+    <div class="codeblock" style="margin-bottom:44px">
+      <button class="copy-btn">Copy</button>
+      <pre><code>npm install -g n8c
+# …or run without installing:  npx n8c --help</code></pre>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="body">
+          <h3>Scaffold the project</h3>
+          <p>Creates <code>n8c.config.json</code>, a <code>.env</code> template, a <code>.gitignore</code>, and reconciles the database indexes.</p>
+          <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>n8c init</code></pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="body">
+          <h3>Fill in your environment</h3>
+          <p>Edit <code>.env</code> with your connection details. These files are gitignored — secrets never get committed.</p>
+          <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>N8N_BASE=https://your-n8n.example.com
+N8N_API_KEY=your-api-key
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB=n8c
+N8C_CREDENTIAL_ENCRYPTION_KEY=a-strong-random-key</code></pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="body">
+          <h3>Pull your instance into code</h3>
+          <p>Imports every workflow, prompt and credential from n8n into the database and writes them to disk as readable files under <code>n8c/</code>.</p>
+          <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>n8c pull</code></pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <div class="body">
+          <h3>Edit &amp; commit</h3>
+          <p>Change a workflow's <code>apply.ts</code>, tweak a prompt, review the diff in a pull request — normal git workflow.</p>
+          <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>git add n8c/ && git commit -m "Update triage prompt"</code></pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">5</div>
+        <div class="body">
+          <h3>Preview and deploy</h3>
+          <p><code>plan</code> shows exactly what will change against live n8n; <code>apply</code> pushes it and records the new version. Use <code>apply --force</code> to plan and apply in one step.</p>
+          <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>n8c plan
+n8c apply</code></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <span class="ci">💡</span>
+      <p><b>Promote the same files to production.</b> Run <code>n8c -e prod pull</code> once on prod's fresh DB to build its credential mapping, then <code>n8c -e prod plan</code> and <code>n8c -e prod apply</code>. The env-neutral local IDs resolve to prod's real n8n IDs at push time.</p>
+    </div>
+  </div>
+</section>
+
+<section id="backends">
+  <div class="wrap">
+    <div class="eyebrow">Storage backends</div>
+    <h2>MongoDB for teams, SQLite for zero setup</h2>
+    <p class="sub">The database is n8c's source of truth for version history. Pick the one that fits — set it with <code>database</code> in <code>n8c.config.json</code>; the whole workflow is otherwise identical.</p>
+    <div class="table-wrap">
+      <div class="table-scroll">
+      <table class="cmp">
+        <thead><tr><th>Feature</th><th>MongoDB</th><th>SQLite</th></tr></thead>
+        <tbody>
+          <tr><td>Setup</td><td>a running MongoDB server</td><td>a single local file — zero setup</td></tr>
+          <tr><td>Dependency</td><td><code>mongodb</code> driver</td><td>built-in <code>node:sqlite</code> — nothing to install</td></tr>
+          <tr><td>Versioning · plan/apply · releases · drop</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+          <tr><td>Multi-env credential mapping</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+          <tr><td>Encrypted credentials at rest</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+          <tr><td>Concurrency</td><td>multi-writer — shared team / CI</td><td>single-writer — one machine</td></tr>
+          <tr><td>Atomic <code>apply</code> snapshots</td><td>✓ (replica set recommended)</td><td>✓ (single-file, always)</td></tr>
+          <tr><td>DB backup command</td><td class="ok">✓ &nbsp;<code>n8c db export</code></td><td class="no">— just copy the <code>.sqlite</code> file</td></tr>
+          <tr><td>Runtime prompt-content registry</td><td class="ok">✓</td><td class="no">disabled</td></tr>
+          <tr><td>Best for</td><td>teams · shared staging / prod</td><td>solo dev · quick trial · CI</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="cols" style="margin-top:22px">
+      <div>
+        <h3 style="margin-bottom:10px">MongoDB</h3>
+        <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>// n8c.config.json
+{ "database": "mongodb" }
+
+// .env
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB=n8c</code></pre></div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:10px">SQLite</h3>
+        <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>// n8c.config.json
+{ "database": "sqlite",
+  "sqlite": { "file": "n8c.sqlite" } }
+
+// .env — no database server needed</code></pre></div>
+      </div>
+    </div>
+    <div class="callout" style="margin-top:26px; border-left-color: var(--blue)">
+      <span class="ci">ℹ️</span>
+      <p><b>Why prompt-content needs MongoDB.</b> The runtime prompt registry exists so an n8n node can read prompts from the database <em>while a workflow runs</em> — and n8n can only reach MongoDB for that. On SQLite that single feature is skipped; workflows, prompts, credentials, versioning and rollback are all identical.</p>
+    </div>
+  </div>
+</section>
+
+<section id="concepts">
+  <div class="wrap">
+    <div class="eyebrow">How it works</div>
+    <h2>Concepts</h2>
+    <p class="sub">Everything n8c manages lives as a folder of code, versioned in the database.</p>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:14px">Entities on disk</h3>
+        <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>n8c/
+├── workflows/&lt;localId&gt;/
+│   ├── metadata.json   # name, description
+│   └── apply.ts        # returns the workflow body
+├── prompts/&lt;localId&gt;/
+├── prompt-contents/&lt;localId&gt;/
+└── credentials/&lt;localId&gt;/</code></pre></div>
+        <p style="color:var(--text-dim); font-size:0.92rem; margin-top:14px"><code>apply.ts</code> default-exports the entity body. Workflows export as readable code — each node a named object, connections inline. Local IDs are env-neutral UUIDs, never the n8n ID.</p>
+      </div>
+      <div>
+        <h3 style="margin-bottom:14px">Database collections</h3>
+        <ul class="clean">
+          <li><b>n8c_workflows</b> — live docs + every version</li>
+          <li><b>n8c_prompts</b> — build-time prompts wired into nodes</li>
+          <li><b>n8c_prompt_contents</b> — runtime prompts read at execution</li>
+          <li><b>n8c_credentials</b> — encrypted at rest + versions</li>
+          <li><b>n8c_manifests</b> — version metadata only</li>
+          <li><b>n8c_definitions</b> — per-env <code>localId → n8nId</code> map</li>
+        </ul>
+        <p style="color:var(--text-dim); font-size:0.92rem; margin-top:14px">Every collection name is configurable — override the <code>n8c_</code> prefix or any single name in <code>n8c.config.json</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="commands">
+  <div class="wrap">
+    <div class="eyebrow">Reference</div>
+    <h2>Commands</h2>
+    <p class="sub">Every command self-documents via <code>--help</code>. Global flags: <code>-e, --env &lt;name&gt;</code> and <code>--pipe</code>.</p>
+    <div class="table-wrap">
+      <div class="table-scroll">
+      <table class="cmds">
+        <tr><td class="c">n8c init</td><td class="d">Scaffold config / .env / .gitignore and reconcile DB indexes.</td></tr>
+        <tr><td class="c">n8c pull</td><td class="d">n8n + DB → files. <code>--no-export</code> = DB only.</td></tr>
+        <tr><td class="c">n8c plan</td><td class="d">Diff files vs live → write <code>.states/n8c.state.&lt;env&gt;.json</code>. <code>--destroy</code> includes deletes.</td></tr>
+        <tr><td class="c">n8c apply</td><td class="d">Execute the saved plan (push to n8n, then commit the DB). <code>--force</code> = plan + apply in one step.</td></tr>
+        <tr><td class="c">n8c list</td><td class="d">Version history for all kinds. <code>--full</code> shows untruncated checksums.</td></tr>
+        <tr><td class="c">n8c create</td><td class="d">Scaffold a <code>workflow</code> | <code>prompt</code> | <code>credential</code> | <code>node</code>.</td></tr>
+        <tr><td class="c">n8c restore &lt;ref&gt;</td><td class="d">Roll <b>all kinds</b> back to a release/version; <code>--apply</code> deploys it now.</td></tr>
+        <tr><td class="c">n8c drop &lt;ref…&gt;</td><td class="d">Delete versions from history (a generation drops all kinds; the active one can't be dropped).</td></tr>
+        <tr><td class="c">n8c db export</td><td class="d">Dump all n8c collections to a backup file (MongoDB only).</td></tr>
+        <tr><td class="c">n8c db import</td><td class="d">Recreate + re-import collections from a backup file (MongoDB only).</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="callout" style="border-left-color: var(--green)">
+      <span class="ci">🔐</span>
+      <p><b>Secrets, done right.</b> A credential's <code>apply.ts</code> reads its value from <code>process.env.MY_TOKEN</code>. The reference is what lives in files and the DB — never the resolved secret. At rest, credential data is encrypted with AES-256-GCM.</p>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <div class="eyebrow">Roadmap</div>
+    <h2>Bringing the whole instance under one workflow</h2>
+    <p class="sub">Today n8c manages workflows, prompts, credentials and runtime prompt-content, and can scope to a single n8n project. Next up — the rest of an n8n instance, under the same <code>plan</code> / <code>apply</code> / rollback model.</p>
+    <div class="table-wrap">
+      <div class="table-scroll">
+      <table class="cmp">
+        <thead><tr><th>Entity</th><th>Status</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Projects</td><td><span class="pill">Planned</span></td><td>Manage projects &amp; workflow/credential assignment (today: scope to one project).</td></tr>
+          <tr><td>Variables</td><td><span class="pill">Planned</span></td><td>Version &amp; deploy n8n environment variables.</td></tr>
+          <tr><td>Tags</td><td><span class="pill">Planned</span></td><td>Workflow tags.</td></tr>
+          <tr><td>Folders</td><td><span class="pill">Planned</span></td><td>Workflow folders / organization.</td></tr>
+          <tr><td>External secrets</td><td><span class="pill" style="background:rgba(145,152,161,0.14);color:var(--text-dim)">Exploring</span></td><td>External secret-store references.</td></tr>
+          <tr><td>Users &amp; roles (RBAC)</td><td><span class="pill" style="background:rgba(145,152,161,0.14);color:var(--text-dim)">Exploring</span></td><td>Users, roles and permissions.</td></tr>
+          <tr><td>Data tables</td><td><span class="pill" style="background:rgba(145,152,161,0.14);color:var(--text-dim)">Exploring</span></td><td>n8n data tables.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="callout" style="margin-top:26px; border-left-color: var(--blue)">
+      <span class="ci">⚖️</span>
+      <p><b>n8n editions &amp; licensing.</b> Several of these — projects, variables, folders, external secrets and RBAC — are <b>n8n Enterprise</b> features, available only on licensed editions and only where n8n's Public API exposes them. n8c manages every entity strictly through that official API and never works around n8n's <a href="https://docs.n8n.io/sustainable-use-license/" target="_blank" rel="noopener">Sustainable Use License</a>, so availability depends on your n8n edition. n8c itself is MIT-licensed.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div>
+      <span class="pill">MIT</span> &nbsp; n8c — code-first CLI for n8n · © 2026 ltmin
+    </div>
+    <div class="foot-links">
+      <a href="https://github.com/nullseal/n8c" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/nullseal/n8c#readme" target="_blank" rel="noopener">Docs</a>
+      <a href="https://www.npmjs.com/package/n8c" target="_blank" rel="noopener">npm</a>
+      <a href="https://n8n.io" target="_blank" rel="noopener">n8n</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var code = btn.parentElement.querySelector('code');
+      var text = code.innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        var old = btn.textContent;
+        btn.textContent = 'Copied ✓';
+        btn.classList.add('ok');
+        setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1600);
+      });
+    });
+  });
+</script>
+</body>
+</html>

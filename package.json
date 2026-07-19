@@ -1,0 +1,47 @@
+{
+  "name": "n8c",
+  "version": "0.1.0",
+  "description": "Terraform-style, code-first CLI to version and deploy n8n workflows, prompts and credentials from a database.",
+  "type": "module",
+  "license": "MIT",
+  "author": "ltmin",
+  "keywords": [
+    "n8n",
+    "cli",
+    "gitops",
+    "infrastructure-as-code",
+    "workflow",
+    "automation",
+    "terraform",
+    "mongodb",
+    "sqlite"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "bin": {
+    "n8c": "src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nullseal/n8c.git"
+  },
+  "homepage": "https://github.com/nullseal/n8c#readme",
+  "bugs": {
+    "url": "https://github.com/nullseal/n8c/issues"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/cli.ts",
+    "prepublishOnly": "node --test"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "mongodb": "^6.8.0"
+  }
+}
