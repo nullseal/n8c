@@ -29,7 +29,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nullseal/n8c.git"
+    "url": "https://github.com/nullseal/n8c"
   },
   "homepage": "https://github.com/nullseal/n8c#readme",
   "bugs": {
