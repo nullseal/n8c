@@ -20,10 +20,10 @@
     "node": ">=22.18.0"
   },
   "bin": {
-    "n8c": "src/cli.ts"
+    "n8c": "dist/cli.js"
   },
   "files": [
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -41,10 +41,16 @@
   "scripts": {
     "test": "node --test",
     "start": "node src/cli.ts",
-    "prepublishOnly": "node --test"
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "node --test && npm run build"
   },
   "dependencies": {
     "commander": "^12.1.0",
     "mongodb": "^6.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.9.3"
   }
 }

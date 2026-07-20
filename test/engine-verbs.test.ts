@@ -39,12 +39,13 @@ test('restore reactivates an old version and overrides live', async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('pull for prompts snapshots current live without server', async () => {
+test('pull for prompts reads current live without a server (and writes no version)', async () => {
   const store = new MemoryStore();
   await store.withTransaction((s) => store.putLive('prompts', [{ localId: 'p1', name: 'g', body: { key: 'g' }, checksum: 'c' }], s));
   const r = await pullEntity(store, prompt, '/tmp', ctx());
   assert.equal(r.count, 1);
-  assert.equal((await store.listVersions('prompts')).length, 1);
+  assert.equal(r.docs.length, 1, 'docs returned for export');
+  assert.equal((await store.listVersions('prompts')).length, 0, 'versioning is generation-wide, committed separately');
 });
 
 test('export then import round-trips a version', async () => {

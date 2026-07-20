@@ -12,6 +12,9 @@ export const hash = (s: string): string => wrap('\x1b[36m', s);   // cyan — co
 export const dim = (s: string): string => wrap('\x1b[2m', s);     // gray — muted / no-op text
 export const info = (s: string): string => wrap('\x1b[34m', s);   // blue — sub-notes
 export const active = (s: string): string => wrap('\x1b[32m', s); // green — active-version marker
+export const notice = (s: string): string => wrap('\x1b[1;33m', s); // bold yellow — the headline outcome of a command
+export const ok = (s: string): string => wrap('\x1b[1;32m', s);     // bold green — the headline success of a command
+export const danger = (s: string): string => wrap('\x1b[1;31m', s); // bold red — destructive drift / data at risk
 
 // Colour a plan/node status word: new=green, changed=yellow, removed=red,
 // identical=dim. Unknown words pass through uncoloured.

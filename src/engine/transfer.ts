@@ -14,9 +14,30 @@ import { scanWorkflowSecrets } from './secret-scan.ts';
 // Render a credential apply.ts: name/type + a commented hint for the secret.
 // The real `data` value (resolved from process.env at read time) is NEVER written
 // back to a file — that would leak the secret into a committed source file.
+// Example `data` shapes for common n8n credential types. The keys are defined by
+// the TYPE, not by n8c — n8n never returns credential data, so it can't be pulled
+// and we can only suggest. A wrong key is rejected by n8n with a 400.
+const CREDENTIAL_DATA_EXAMPLE: Record<string, string> = {
+  httpHeaderAuth: "{ name: 'Authorization', value: process.env.MY_TOKEN }",
+  httpQueryAuth: "{ name: 'api_key', value: process.env.MY_TOKEN }",
+  httpBasicAuth: '{ user: process.env.MY_USER, password: process.env.MY_PASSWORD }',
+  openAiApi: '{ apiKey: process.env.OPENAI_API_KEY }',
+  mongoDb: '{ connectionString: process.env.MONGO_URI }',
+};
+
 function credentialSource(body: any): string {
-  const hint = `  // secret from .env — the value resolves at read time, never committed:\n  // data: { token: process.env.MY_TOKEN },`;
-  return `export default {\n  "name": ${JSON.stringify(body.name)},\n  "type": ${JSON.stringify(body.type)},\n${hint}\n};\n`;
+  const example = CREDENTIAL_DATA_EXAMPLE[body.type] ?? '{ apiKey: process.env.MY_TOKEN }';
+  const hint = [
+    '  // Secret from .env — never write a real value here (n8c/ is committed).',
+    `  // \`data\` keys come from the credential type (${body.type}) in n8n:`,
+    `  // data: ${example},`,
+  ].join('\n');
+  // `import type` + the return-type annotation are erasable, so Node still runs
+  // this file as-is; the editor gets the real field names from n8c.types.ts. The
+  // type argument keeps `data` checked against THIS credential's type.
+  return `import type { Credential } from '../../n8c.types.ts';\n\n`
+    + `export default (): Credential<${JSON.stringify(body.type)}> => ({\n`
+    + `  name: ${JSON.stringify(body.name)},\n  type: ${JSON.stringify(body.type)},\n${hint}\n});\n`;
 }
 
 // Export a stored VERSION to files (used by restore / list-then-export). Looks up
@@ -64,7 +85,9 @@ export async function exportDocs(desc: EntityDescriptor, root: string, docs: imp
           // relink an n8n id → localId, OR keep a ref that's ALREADY a localId
           // (idempotent — a re-export of an applied workflow shouldn't throw).
           const localId = n8nIdToLocal[String(ref.id)] ?? (knownLocalIds.has(String(ref.id)) ? String(ref.id) : undefined);
-          if (!localId) throw new Error(`workflow ${d.localId}: credential ${ref.id} (${ref.name ?? ''}) has no localId mapping — run \`n8c pull\` first (it maps credentials from workflow nodes)`);
+          if (!localId) throw new Error(`workflow "${d.name ?? d.localId}": credential ${ref.id}${ref.name ? ` (${ref.name})` : ''} has no localId mapping. ` +
+            `A pull maps every credential referenced by a workflow node, so this usually means the credential is not reachable by your API key — ` +
+            `e.g. it lives in a different n8n project (set \`n8nProjectId\` in n8c.config.json) or the key lacks access to it.`);
           used[localId] = { name: ref.name };
         }
       }

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildContext } from './context.ts';
+import { checksum } from './checksum.ts';
 import { entityByKind } from './entities/index.ts';
 import { listEntity } from './engine/list.ts';
 import { pullEntity } from './engine/pull.ts';
@@ -11,7 +12,8 @@ import { exportVersion, exportDocs } from './engine/transfer.ts';
 import { createEntity } from './engine/generate.ts';
 import { initProject, initDb } from './engine/init.ts';
 import { loadEnv } from './env.ts';
-import { hash, status as styleStatus, active, dim, info, setStyle } from './style.ts';
+import { hash, status as styleStatus, active, dim, info, notice, ok, danger, setStyle } from './style.ts';
+import { setDebug } from './debug.ts';
 
 const GROUP_TO_KIND: Record<string, string> = { workflow: 'workflows', prompt: 'prompts', 'prompt-content': 'promptContents', credential: 'credentials' };
 const KIND_TO_SINGULAR: Record<string, string> = { workflows: 'workflow', prompts: 'prompt', promptContents: 'prompt-content', credentials: 'credential' };
@@ -32,7 +34,7 @@ export function renderApplyTail(status: string, versionId?: string): string {
 //   Plan: 0 to create, 6 to update, 0 to destroy.
 const ACTION_SIGN: Record<string, string> = { create: '+', update: '~', delete: '-' };
 const ACTION_STATUS: Record<string, string> = { create: 'new', update: 'changed', delete: 'removed' };
-function printPlanSummary(state: { summary: any; resources: any[] }): void {
+function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[] }): void {
   for (const r of state.resources) {
     if (r.action === 'noop') continue;
     const type = KIND_TO_SINGULAR[r.kind] ?? r.kind;
@@ -41,6 +43,15 @@ function printPlanSummary(state: { summary: any; resources: any[] }): void {
   }
   const s = state.summary;
   console.log(`Plan: ${s.create} to create, ${s.update} to update, ${s.delete} to destroy.`);
+  // Deleted-locally entities are never destroyed implicitly — say so loudly rather
+  // than letting `plan` look like nothing happened.
+  const orphans = state.orphans ?? [];
+  if (orphans.length) {
+    const one = orphans.length === 1;
+    console.log(danger(`\n! ${orphans.length} ${one ? 'entity exists' : 'entities exist'} on n8n/in the DB but ${one ? 'no longer has a file' : 'no longer have files'}:`));
+    for (const o of orphans) console.log(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}`));
+    console.log(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
+  }
 }
 
 // Print an apply result: one line per applied item (and per failure), then a
@@ -61,10 +72,15 @@ function printApplied(state: { resources: any[]; applied: { ok: string[]; failed
   console.log(`Apply complete: ${a.ok.length} applied, ${a.failed.length} failed.`);
 }
 
-// One pull result line: `pulled <kind> <n> — <hash> — <no changes | versionId>`.
-function pulledLine(g: string, r: { count: number; checksum: string; deduped: boolean; versionId?: string }): string {
-  const tail = r.deduped ? dim('no changes') : (r.versionId ?? '');
-  return `pulled ${g} ${r.count} — ${hash(r.checksum.slice(0, 8))} — ${tail}`;
+
+// True if the n8c root already holds entity files that a `pull` would overwrite or
+// prune (so we should confirm before clobbering local edits). Empty/absent → false.
+export function dirHasEntities(root: string): boolean {
+  for (const kind of ['workflows', 'prompts', 'prompt-contents', 'credentials']) {
+    const dir = join(root, kind);
+    if (existsSync(dir) && readdirSync(dir).length > 0) return true;
+  }
+  return false;
 }
 
 // Loudly warn about hardcoded secrets found in exported workflow files — n8c/
@@ -75,34 +91,103 @@ function printSecretWarnings(warnings: string[]): void {
   for (const w of warnings) console.error(`    - ${w}`);
 }
 
-// Resolve a version reference against a manifest: an exact versionId, or a
-// unique checksum (hash) prefix — git-style, so a short hash aliases the id.
-export function resolveVersionRef(versions: { versionId: string; checksum: string }[], ref: string): string {
-  if (versions.some((v) => v.versionId === ref)) return ref;
-  const hits = versions.filter((v) => v.checksum.startsWith(ref));
+export interface GenerationMember { kind: string; checksum: string; }
+export interface Generation { versionId: string; hash: string; kinds: string[]; members: GenerationMember[]; active: boolean; message?: string; }
+
+// Resolve a generation reference: an exact versionId, or a unique generation-hash
+// prefix — git-style, so a short hash aliases the (long) versionId.
+export function resolveGenerationRef(gens: Generation[], rawRef: string): string {
+  // `n8c list` prints `<hash>: <message>`, so a copy-paste easily carries the colon
+  // (and stray whitespace) — accept those rather than failing to resolve.
+  const ref = rawRef.trim().replace(/:+$/, '');
+  const exact = gens.find((g) => g.versionId === ref);
+  if (exact) return exact.versionId;
+  const hits = gens.filter((g) => g.hash.startsWith(ref));
   if (hits.length === 1) return hits[0].versionId;
-  if (hits.length > 1) throw new Error(`ambiguous version hash "${ref}" (${hits.length} matches)`);
-  throw new Error(`no version matching "${ref}"`);
+  if (hits.length > 1) {
+    throw new Error(`ambiguous generation hash "${ref}" (${hits.length} matches):\n`
+      + hits.map((h) => `    ${h.hash.slice(0, 12)}  ${h.versionId}${h.message ? '  ' + h.message : ''}`).join('\n')
+      + `\n  use a longer prefix or the full versionId.`);
+  }
+  throw new Error(`no generation matching "${ref}" (see \`n8c list\`)`);
 }
 
-// Pick a version: an explicit ref (id or hash prefix), else the active version,
-// else the newest. Throws when there are no versions.
-export function pickVersion(versions: { versionId: string; checksum: string; isActive: boolean }[], ref?: string): string {
-  if (ref) return resolveVersionRef(versions, ref);
-  const active = versions.find((v) => v.isActive);
-  if (active) return active.versionId;
-  if (versions.length) return versions[versions.length - 1].versionId; // sorted ascending → newest
-  throw new Error('no versions available');
+// Fold the per-kind versions into generations (releases): the versionId is the
+// shared key an `apply` writes across every kind, so grouping by it shows one row
+// per release with the kinds it touched.
+//
+// Each generation gets a short `hash` — the typable id you pass to `restore` /
+// `drop`. It mixes the versionId in with the member checksums so it is UNIQUE per
+// release: two generations can legitimately hold identical content (a pull, then an
+// apply that changed nothing), and a purely content-addressed hash would collide and
+// make the reference ambiguous. Newest-first.
+export function groupByGeneration(perKind: { kind: string; versions: { versionId: string; isActive: boolean; message?: string; checksum: string }[] }[]): Generation[] {
+  const gens = new Map<string, Generation>();
+  for (const { kind, versions } of perKind) {
+    for (const v of versions) {
+      const g = gens.get(v.versionId) ?? { versionId: v.versionId, hash: '', kinds: [], members: [], active: false };
+      if (!g.kinds.includes(kind)) g.kinds.push(kind);
+      g.members.push({ kind, checksum: v.checksum });
+      if (v.isActive) g.active = true;
+      if (!g.message && v.message) g.message = v.message;
+      gens.set(v.versionId, g);
+    }
+  }
+  return [...gens.values()]
+    .map((g) => ({ ...g, hash: checksum([g.versionId, ...g.members.map((m) => `${m.kind}:${m.checksum}`).sort()]) }))
+    .sort((a, b) => (a.versionId < b.versionId ? 1 : a.versionId > b.versionId ? -1 : 0));
 }
 
-// Render one manifest version line: `<active> <hash> <versionId> [draft] <msg>`.
-// Hash sits left of the versionId date string (consistent with apply/pull). The
-// version `message` is truncated unless `full` (which also shows the full hash).
-export function renderVersion(v: { isActive: boolean; versionId: string; checksum: string; draft?: boolean; message?: string }, full: boolean): string {
-  const h = full ? v.checksum : v.checksum.slice(0, 8);
-  let msg = v.message ?? '';
+// Render one generation as two lines — the release, then what it contains:
+//
+//   * 17257ffa: update abc
+//       credential b5051dc0 · prompt-content e1910a56 · prompt 0fde0b6a · workflow 17257ffa
+//
+// The generation hash leads (git-style) — it's the short id you pass to
+// `restore` / `drop`. The indented row lists each kind with ITS own checksum, so a
+// release is auditable at a glance. `--full` adds the versionId and untruncates
+// every hash and the message.
+export function renderGeneration(g: Generation, full: boolean): string {
+  const short = (s: string) => (full ? s : s.slice(0, 8));
+  let msg = g.message ?? '';
   if (!full && msg.length > MSG_MAX) msg = msg.slice(0, MSG_MAX - 1) + '…';
-  return `${v.isActive ? active('*') : ' '} ${hash(h)} ${v.versionId}${v.draft ? ' [draft]' : ''}${msg ? ' ' + msg : ''}`;
+  const head = `${g.active ? active('*') : ' '} ${hash(short(g.hash))}${msg ? ': ' + msg : ''}`
+    + (full ? ` ${dim(g.versionId)}` : '');
+  const members = g.members
+    .slice()
+    .sort((a, b) => (KIND_TO_SINGULAR[a.kind] ?? a.kind).localeCompare(KIND_TO_SINGULAR[b.kind] ?? b.kind))
+    .map((m) => `${dim(KIND_TO_SINGULAR[m.kind] ?? m.kind)} ${hash(short(m.checksum))}`);
+  return `${head}\n    ${members.join(dim(' · '))}`;
+}
+
+// Write n8c/n8c.types.ts from the credential types this instance actually uses
+// (live docs + whatever n8n can list), so the editor knows each credential's real
+// `data` fields. Returns the file path.
+async function writeTypesFile(store: any, ctx: any, root: string): Promise<string> {
+  const { fetchCredentialTypes, renderTypesFile, renderTsconfig } = await import('./engine/types-gen.ts');
+  const types = new Set<string>();
+  for (const d of await store.getLive('credentials')) { const t = (d.body as any)?.type; if (t) types.add(String(t)); }
+  try { for (const c of (await ctx.n8n?.listCredentials?.()) ?? []) if (c?.type) types.add(String(c.type)); } catch { /* not listable */ }
+
+  const cwd = process.cwd();
+  // Declaring `process` alongside @types/node fails with TS2403, so only ship the
+  // ambient shim when the project has no Node types of its own.
+  const hasNodeTypes = existsSync(join(cwd, 'node_modules', '@types', 'node'));
+  const file = join(root, 'n8c.types.ts');
+  writeFileSync(file, renderTypesFile(await fetchCredentialTypes(ctx, [...types]), { declareProcess: !hasNodeTypes }));
+
+  // The entity files import with a `.ts` specifier, which needs
+  // allowImportingTsExtensions — give the editor a tsconfig unless one exists.
+  const tsconfig = join(cwd, 'tsconfig.json');
+  if (!existsSync(tsconfig)) writeFileSync(tsconfig, renderTsconfig(root.slice(cwd.length + 1) || 'n8c'));
+  return file;
+}
+
+// Every managed kind's version list (real kind keys), the input for generation
+// grouping/resolution. prompt-content is skipped on backends that don't serve it.
+async function readGenerations(store: any, ctx: any): Promise<{ kind: string; versions: any[] }[]> {
+  const kinds = ['workflows', 'prompts', 'credentials', ...(ctx.promptContentsEnabled === false ? [] : ['promptContents'])];
+  return Promise.all(kinds.map(async (kind) => ({ kind, versions: await listEntity(store, entityByKind[kind]) })));
 }
 
 function resolveRoot(cwd: string): string {
@@ -123,7 +208,8 @@ export function buildProgram(): Command {
     .description('Code-first CLI to version n8n workflows, prompts and credentials in a database')
     .version(pkgVersion())
     .option('-e, --env <name>', 'environment (overrides config defaultEnv)')
-    .option('--pipe', 'raw output — no color/style (for piping/parsing)');
+    .option('--pipe', 'raw output — no color/style (for piping/parsing)')
+    .option('--debug', 'log every n8n API call (secrets redacted) to stderr');
 
   const envOf = () => program.opts().env as string | undefined;
 
@@ -131,6 +217,7 @@ export function buildProgram(): Command {
   // stdout, or NO_COLOR. Scanning argv keeps --pipe position-independent.
   program.hook('preAction', () => {
     setStyle(!!process.stdout.isTTY && !process.argv.includes('--pipe') && !process.env.NO_COLOR);
+    setDebug(process.argv.includes('--debug'));
   });
 
   // --- init ---
@@ -185,6 +272,7 @@ export function buildProgram(): Command {
     .description('execute the saved plan from `n8c plan` (push to n8n, then commit the DB)')
     .option('--force', 'compute a fresh plan and apply it in one step (no saved plan needed, like `terraform apply`)')
     .option('--destroy', 'with --force: include workflow deletes (archive) for server-only workflows')
+    .option('-m, --message <msg>', 'note recorded on the release (shown in `n8c list`)')
     .action(async (opts) => {
       const { ctx, store, root } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
@@ -199,26 +287,23 @@ export function buildProgram(): Command {
           if (await desiredBundleChecksum(root, ctx) !== state.desiredChecksum) throw new Error('files changed since plan; re-run `n8c plan` (or `n8c apply --force`)');
         }
         writeState(process.cwd(), ctx.env, state);
-        const done = await applyFromState(store, root, ctx, state);
+        const done = await applyFromState(store, root, ctx, state, { message: opts.message });
         writeState(process.cwd(), ctx.env, done);
         printApplied(done);
         if (done.applied!.failed.length) process.exitCode = 1;
       } finally { await store.close(); }
     });
 
-  // --- global list (all entities) ---
+  // --- list: the generation (release) timeline ---
+  // A "version" IS a generation: apply/restore/drop always operate on the whole
+  // instance, never a single resource — so there is no per-kind listing.
   program.command('list')
-    .description('list versions for all entities')
-    .option('--full', 'show the full checksum and untruncated message')
+    .description('list generation versions (releases), newest first')
+    .option('--full', 'show untruncated messages')
     .action(async (opts) => {
       const { ctx, store } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
-        for (const [g, kind] of Object.entries(GROUP_TO_KIND)) {
-          if (kind === 'promptContents' && ctx.promptContentsEnabled === false) continue;
-          console.log(`# ${g}`);
-          // Display newest-first (store keeps versions ascending for apply/pull dedup).
-          for (const v of (await listEntity(store, entityByKind[kind])).slice().reverse()) console.log(renderVersion(v, !!opts.full));
-        }
+        for (const gen of groupByGeneration(await readGenerations(store, ctx))) console.log(renderGeneration(gen, !!opts.full));
       } finally { await store.close(); }
     });
 
@@ -226,41 +311,97 @@ export function buildProgram(): Command {
   program.command('pull')
     .description('pull all entities from the active env and write them to files (use --no-export to skip files)')
     .option('--no-export', 'pull into the DB only; do not write files')
+    .option('-y, --yes', 'skip the overwrite confirmation (for non-interactive use)')
     .option('-m, --message <msg>')
     .action(async (opts) => {
       const { ctx, store, root } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
-        for (const [g, kind] of Object.entries(GROUP_TO_KIND)) {
-          if (kind === 'promptContents' && ctx.promptContentsEnabled === false) continue;
+        // pull rewrites files under the n8c root to mirror n8n's current state —
+        // it OVERWRITES and PRUNES entity dirs, so any un-pulled local edits are
+        // lost. Confirm first (unless --no-export, --yes, or the root is empty).
+        if (opts.export !== false && !opts.yes && dirHasEntities(root)) {
+          if (!process.stdin.isTTY) throw new Error('pull overwrites files under the n8c root (local edits are lost). Re-run with -y/--yes to confirm in a non-interactive shell.');
+          const { createInterface } = await import('node:readline/promises');
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          let answer = '';
+          console.log(danger("! This overwrites the n8c root with n8n's current state — un-pulled local edits will be lost."));
+          try { answer = (await rl.question('Continue? [y/N] ')).trim().toLowerCase(); }
+          finally { rl.close(); }
+          if (answer !== 'y' && answer !== 'yes') { console.log('pull aborted — nothing changed.'); return; }
+        }
+        // Phase 1 — fetch every kind's current reality (no versions written yet).
+        const groups = Object.entries(GROUP_TO_KIND).filter(([, k]) => !(k === 'promptContents' && ctx.promptContentsEnabled === false));
+        const pulled: { g: string; kind: string; desc: any; result: any }[] = [];
+        for (const [g, kind] of groups) {
           const desc = entityByKind[kind];
-          let docs;
+          let result;
           if (kind === 'prompts') {
             const { pullPromptsFromNodes } = await import('./engine/pull-prompts.ts');
-            const r = await pullPromptsFromNodes(store, ctx, { message: opts.message });
-            console.log(pulledLine(g, r)); docs = r.docs;
+            result = await pullPromptsFromNodes(store, ctx);
           } else {
-            const r = await pullEntity(store, desc, root, ctx, { message: opts.message });
-            console.log(pulledLine(g, r)); docs = r.docs;
-            if (kind === 'workflows') {
-              const { mapCredentialsFromWorkflows } = await import('./engine/environment.ts');
-              const m = await mapCredentialsFromWorkflows(store, ctx);
-              console.log('  ' + info(`↳ mapped ${m.mapped} credential(s) from workflows`));
-            }
+            result = await pullEntity(store, desc, root, ctx);
           }
-          // Write the just-pulled docs to files (straight from what we pulled — no
-          // re-read of a stored version). A per-kind failure is reported but never
-          // aborts the whole pull (other kinds still export).
-          if (opts.export !== false && docs && docs.length) {
+          pulled.push({ g, kind, desc, result });
+        }
+
+        // Map credentials from workflow NODES *after* every pull. The credential
+        // pull writes the mapping with replace-semantics from `listCredentials`,
+        // which only returns credentials this API key can see — a credential living
+        // in another n8n project would be dropped. This pass merges on top, so
+        // node-referenced credentials survive and workflow export can resolve them.
+        {
+          const { mapCredentialsFromWorkflows } = await import('./engine/environment.ts');
+          const m = await mapCredentialsFromWorkflows(store, ctx);
+          console.log('  ' + info(`↳ mapped ${m.mapped} credential(s) from workflows`));
+        }
+
+        // Phase 2 — commit ONE generation for the whole pull (like apply), but only
+        // if something actually differs from the currently-active generation.
+        const activeGen = groupByGeneration(await readGenerations(store, ctx)).find((x) => x.active);
+        const changedKinds = pulled.filter((p) => activeGen?.members.find((m) => m.kind === p.kind)?.checksum !== p.result.checksum);
+        for (const p of pulled) {
+          const changed = changedKinds.includes(p);
+          console.log(`pulled ${p.g} ${p.result.count} — ${hash(p.result.checksum.slice(0, 8))} — ${changed ? 'changed' : dim('no changes')}`);
+        }
+        if (changedKinds.length) {
+          const { commitPullGeneration } = await import('./engine/pull.ts');
+          const { nextVersionId } = await import('./version.ts');
+          const generation = nextVersionId();
+          await commitPullGeneration(store, generation, pulled.map((p) => p.result), opts.message);
+          const gen = groupByGeneration(await readGenerations(store, ctx)).find((x) => x.versionId === generation);
+          console.log(ok(`✓ generation ${gen ? gen.hash.slice(0, 8) : generation} created`) + ` ${dim(generation)}`);
+        } else {
+          console.log(notice('= nothing changed — no new generation'));
+        }
+
+        // Phase 3 — write the just-pulled docs to files (straight from what we
+        // pulled — no re-read of a stored version). A per-kind failure is reported
+        // but never aborts the whole pull (other kinds still export).
+        if (opts.export !== false) {
+          // regenerate types first — the exported files `import type` from it
+          try { await writeTypesFile(store, ctx, root); console.log('  ' + info('↳ types regenerated')); }
+          catch (e: any) { console.error('  ' + `⚠ types skipped: ${String(e?.message ?? e)}`); }
+          for (const p of pulled) {
+            if (!p.result.docs.length) continue;
             try {
-              const warns = await exportDocs(desc, root, docs, ctx);
-              console.log('  ' + info(`↳ exported to files`));
+              const warns = await exportDocs(p.desc, root, p.result.docs, ctx);
+              console.log('  ' + info(`↳ exported ${p.g} to files`));
               printSecretWarnings(warns);
             } catch (e: any) {
-              console.error('  ' + `⚠ export skipped for ${g}: ${String(e?.message ?? e)}`);
+              console.error('  ' + `⚠ export skipped for ${p.g}: ${String(e?.message ?? e)}`);
             }
           }
         }
       } finally { await store.close(); }
+    });
+
+  // --- types: generate n8c/n8c.types.ts (editor-only types) ---
+  program.command('types')
+    .description('generate n8c/n8c.types.ts — credential field types (from n8n) + entity shapes')
+    .action(async () => {
+      const { ctx, store, root } = await buildContext(process.cwd(), 'credentials', envOf());
+      try { console.log(`types written → ${await writeTypesFile(store, ctx, root)}`); }
+      finally { await store.close(); }
     });
 
   // --- db: dump / restore the whole n8c DB (records + indexes) ---
@@ -312,74 +453,63 @@ export function buildProgram(): Command {
       console.log(`created ${type} ${g.localId}`);
     });
 
-  // --- restore: roll back by rewriting files from a snapshot version ---
-  program.command('restore <ref>')
-    .description('rewrite files from a snapshot version (rollback); then `plan`/`apply`, or --apply now')
+  // --- restore: roll the whole instance back to a generation version ---
+  program.command('restore <generation>')
+    .description('roll every kind back to a generation version (rollback); then `plan`/`apply`, or --apply now')
     .option('--apply', 'materialize → plan → apply in one shot (incident rollback)')
     .action(async (ref: string, opts) => {
       const { ctx, store, root } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
-        // An apply writes ALL kinds under one shared generation versionId, so a
-        // generation ref matches every kind → restore them all (coherent rollback).
-        // A single-kind ref (a checksum prefix, or a kind-specific pull version)
-        // matches just that kind.
-        const kinds = ['workflows', 'prompts', 'credentials', ...(ctx.promptContentsEnabled === false ? [] : ['promptContents'])];
-        const matches: { kind: string; vid: string }[] = [];
-        for (const kind of kinds) {
-          try { matches.push({ kind, vid: resolveVersionRef(await listEntity(store, entityByKind[kind]), ref) }); } catch { /* no match in this kind */ }
-        }
-        if (!matches.length) throw new Error(`no version matching "${ref}"`);
-        for (const { kind, vid } of matches) {
+        // An apply writes ALL kinds under one shared generation, so resolving the
+        // ref (short hash or full versionId) gives one versionId to restore across
+        // every kind that generation covers.
+        const perKind = await readGenerations(store, ctx);
+        const vid = resolveGenerationRef(groupByGeneration(perKind), ref);
+        for (const { kind, versions } of perKind) {
+          if (!versions.some((v: any) => v.versionId === vid)) continue; // not part of this generation
           printSecretWarnings(await exportVersion(store, entityByKind[kind], root, vid, ctx));
-          console.log(`restored ${KIND_TO_SINGULAR[kind] ?? kind} ${vid} → files.`);
+          console.log(`restored ${KIND_TO_SINGULAR[kind] ?? kind} → files.`);
         }
+        console.log(`generation ${hash(ref)} (${vid}) restored.`);
         if (!opts.apply) { console.log('Run `n8c plan` to preview, `n8c apply` to deploy.'); return; }
         const { computePlan, writeState } = await import('./engine/state.ts');
         const { applyFromState } = await import('./engine/apply-state.ts');
         const state = await computePlan(store, root, ctx, { destroy: false, version: pkgVersion() });
         printPlanSummary(state);
         writeState(process.cwd(), ctx.env, state);
-        const done = await applyFromState(store, root, ctx, state);
+        const done = await applyFromState(store, root, ctx, state, { message: `restore ${ref}` });
         writeState(process.cwd(), ctx.env, done);
         printApplied(done);
       } finally { await store.close(); }
     });
 
   // --- drop: delete one or more versions from history ---
-  program.command('drop <refs...>')
-    .description('delete versions from history (a generation id drops from every kind); live docs untouched')
+  program.command('drop <generations...>')
+    .description('delete generation versions from history (each drops across every kind); live docs untouched')
     .action(async (refs: string[]) => {
       const { ctx, store } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
-        const kinds = ['workflows', 'prompts', 'credentials', ...(ctx.promptContentsEnabled === false ? [] : ['promptContents'])];
-        // Resolve each ref across kinds → the set of (kind, versionId) to drop. A
-        // generation id matches every kind; a checksum prefix / pull version matches one.
-        const targets: { kind: string; vid: string; active: boolean }[] = [];
-        for (const ref of refs) {
-          const found: typeof targets = [];
-          for (const kind of kinds) {
-            const versions = await listEntity(store, entityByKind[kind]);
-            try {
-              const vid = resolveVersionRef(versions, ref);
-              found.push({ kind, vid, active: !!versions.find((v) => v.versionId === vid)?.isActive });
-            } catch { /* not in this kind */ }
-          }
-          if (!found.length) throw new Error(`no version matching "${ref}"`);
-          targets.push(...found);
-        }
-        // Hard guard: the active version is the deploy/rollback baseline and can
+        // Resolve each ref (short hash or full versionId) to a generation, then
+        // delete it across every kind it covers.
+        const perKind = await readGenerations(store, ctx);
+        const gens = groupByGeneration(perKind);
+        const targets = refs.map((ref) => {
+          const vid = resolveGenerationRef(gens, ref);
+          return gens.find((g) => g.versionId === vid)!;
+        });
+        // Hard guard: the active generation is the deploy/rollback baseline and can
         // NEVER be dropped. Switch the baseline first (`n8c restore <other>` or a
         // fresh `n8c apply`), then drop the old one.
-        const active = targets.filter((t) => t.active);
+        const active = targets.filter((g) => g.active);
         if (active.length) {
-          throw new Error(`cannot drop the active version: ${active.map((t) => `${KIND_TO_SINGULAR[t.kind] ?? t.kind} ${t.vid}`).join(', ')}\n` +
-            `the active version is the deploy/rollback baseline — make another version active first (\`n8c restore <other>\` or a new \`n8c apply\`), then drop this one.`);
+          throw new Error(`cannot drop the active generation: ${active.map((g) => g.hash.slice(0, 8)).join(', ')}\n` +
+            `the active generation is the deploy/rollback baseline — make another one active first (\`n8c restore <other>\` or a new \`n8c apply\`), then drop this one.`);
         }
-        for (const t of targets) {
-          await store.withTransaction((s) => store.dropVersion(t.kind, t.vid, s));
-          console.log(`dropped ${KIND_TO_SINGULAR[t.kind] ?? t.kind} ${hash(t.vid)}`);
+        for (const g of targets) {
+          for (const kind of g.kinds) await store.withTransaction((s) => store.dropVersion(kind, g.versionId, s));
+          console.log(`dropped generation ${hash(g.hash.slice(0, 8))} (${g.versionId})`);
         }
-        console.log(dim(`${targets.length} version(s) dropped`));
+        console.log(dim(`${targets.length} generation(s) dropped`));
       } finally { await store.close(); }
     });
 
@@ -404,9 +534,9 @@ function isEntryPoint(): boolean {
 
 if (isEntryPoint()) {
   const program = buildProgram();
-  // --pipe is global and position-independent: strip it before parsing so it's
-  // accepted after any subcommand (the preAction hook reads it from process.argv).
-  const argv = process.argv.filter((a) => a !== '--pipe');
+  // --pipe / --debug are global and position-independent: strip them before parsing
+  // so they're accepted after any subcommand (the preAction hook reads process.argv).
+  const argv = process.argv.filter((a) => a !== '--pipe' && a !== '--debug');
   if (argv.slice(2).length === 0) { program.outputHelp(); process.exit(0); } // no command → help
   program.parseAsync(argv).catch((e) => { console.error(e.message); process.exit(1); });
 }

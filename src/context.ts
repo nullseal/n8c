@@ -11,7 +11,15 @@ export async function buildContext(cwd: string, kind: string, envFlag?: string) 
   let config: any = {};
   try { config = JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8')); } catch {}
   const env = envFlag ?? config.defaultEnv ?? 'default';
-  const vars = { ...loadEnv(cwd, env), ...process.env };
+  const fileEnv = loadEnv(cwd, env);
+  // Publish .env values into process.env BEFORE any entity file is read. A
+  // credential's apply.ts references its secret as `process.env.MY_TOKEN`, which is
+  // evaluated when that module is imported — without this the value is `undefined`
+  // and the secret silently vanishes (`data: {}`), so the change is invisible to
+  // `plan` and an apply could push an empty secret. A real shell variable always
+  // wins (same precedence as `vars` below).
+  for (const [k, v] of Object.entries(fileEnv)) if (process.env[k] === undefined) process.env[k] = v;
+  const vars = { ...fileEnv, ...process.env };
   const root = join(cwd, config.root ?? 'n8c');
   const desc = entityByKind[kind];
   const store = await createStore(config.database ?? 'mongodb', vars, { collectionPrefix: config.collectionPrefix, collections: config.collections, sqlite: config.sqlite });

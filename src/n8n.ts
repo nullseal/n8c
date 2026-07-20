@@ -1,3 +1,5 @@
+import { debugRequest, debugResponse } from './debug.ts';
+
 export class N8nClient {
   private baseUrl: string;
   private apiKey: string;
@@ -12,12 +14,18 @@ export class N8nClient {
   }
 
   private async req(method: string, path: string, body?: unknown): Promise<any> {
+    debugRequest(method, path, body); // secrets are redacted in there, never printed
     const res = await this.fetchImpl(this.baseUrl + path, {
       method,
       headers: { 'X-N8N-API-KEY': this.apiKey, 'Content-Type': 'application/json', accept: 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     } as any);
-    if (!res.ok) throw new Error(`n8n ${method} ${path} -> ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      const text = await res.text();
+      debugResponse(res.status, text);
+      throw new Error(`n8n ${method} ${path} -> ${res.status} ${text}`);
+    }
+    debugResponse(res.status);
     return res.json();
   }
 
@@ -57,6 +65,9 @@ export class N8nClient {
   }
   async listCredentials(): Promise<any[]> { return this.reqAll('/api/v1/credentials'); }
   async getCredential(id: string): Promise<any> { return this.req('GET', `/api/v1/credentials/${id}`); }
+  // The JSON Schema for a credential type's `data` fields — the only way to learn
+  // the field names, since n8n never returns credential data itself.
+  async getCredentialSchema(typeName: string): Promise<any> { return this.req('GET', `/api/v1/credentials/schema/${encodeURIComponent(typeName)}`); }
   // PATCH updates in place (keeps the id). isPartialData:true merges — so omitting
   // `data` PRESERVES the existing secret instead of wiping it.
   async updateCredential(id: string, body: unknown): Promise<{ id: string; updatedAt?: string }> { return this.req('PATCH', `/api/v1/credentials/${id}`, body); }

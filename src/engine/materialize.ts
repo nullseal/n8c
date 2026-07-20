@@ -72,9 +72,12 @@ export function materializeWorkflowSource(body: any, n8nIdToLocal: Record<string
   const wfStr = JSON.stringify(wf, null, 2).replace('"__NODES__"', `[${slugs.join(', ')}]`);
 
   const parts: string[] = [];
+  // Editor-only type (erasable — Node still runs this file unchanged).
+  parts.push("import type { Workflow } from '../../n8c.types.ts';");
+  parts.push('');
   if (codeConsts.length) { parts.push(codeConsts.join('\n\n')); parts.push(''); }
   if (nodeConsts.length) { parts.push(nodeConsts.join('\n\n')); parts.push(''); }
-  parts.push(`export default () => (${wfStr});`);
+  parts.push(`export default (): Workflow => (${wfStr});`);
   parts.push('');
   return parts.join('\n');
 }

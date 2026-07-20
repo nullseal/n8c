@@ -14,8 +14,8 @@ function ctxWith(store: MemoryStore, workflows: any[]) {
 
 test('pull mints a UUID localId for an unmarked (UI-made) workflow and records the mapping', async () => {
   const store = new MemoryStore();
-  await pullEntity(store, workflow, '/tmp', ctxWith(store, [{ id: '0MutHWGJpa5zi9ms', name: 'Main', nodes: [], connections: {} }]));
-  const docs = await store.getVersion('workflows', (await store.listVersions('workflows'))[0].versionId);
+  const r = await pullEntity(store, workflow, '/tmp', ctxWith(store, [{ id: '0MutHWGJpa5zi9ms', name: 'Main', nodes: [], connections: {} }]));
+  const docs = r.docs;
   assert.match(docs[0].localId, /[0-9a-f-]{36}/, 'localId is our UUID, not the n8n id');
   assert.equal((docs[0].body as any).meta.n8cLocalId, docs[0].localId, 'marker embedded in body meta');
   const defs = await store.getDefinitions('staging', 'workflows');
@@ -28,17 +28,16 @@ test('pull reuses the localId from the meta marker (stable across envs)', async 
     ctxWith(store, [{ id: 'prod-id-123', name: 'Main', nodes: [], connections: {}, meta: { n8cLocalId: 'fixed-uuid' } }]));
   const defs = await store.getDefinitions('staging', 'workflows');
   assert.equal(defs['fixed-uuid'], 'prod-id-123');
-  assert.equal(r.deduped, false);
 });
 
-test('re-pull reuses the localId via reverse-lookup and dedups', async () => {
+test('re-pull reuses the localId via reverse-lookup (stable mapping)', async () => {
   const store = new MemoryStore();
   const wf = { id: 'abc', name: 'Main', nodes: [], connections: {} };
   const r1 = await pullEntity(store, workflow, '/tmp', ctxWith(store, [wf]));
   const lid = Object.keys(await store.getDefinitions('staging', 'workflows'))[0];
   // second pull of the SAME workflow (now mapping exists) -> same localId, dedup
   const r2 = await pullEntity(store, workflow, '/tmp', ctxWith(store, [wf]));
-  assert.equal(r2.deduped, true, 'unchanged re-pull dedups');
+  assert.equal(r2.checksum, r1.checksum, 'unchanged re-pull yields the same bundle checksum');
   assert.deepEqual(Object.keys(await store.getDefinitions('staging', 'workflows')), [lid]);
 });
 

@@ -121,6 +121,10 @@ export async function readEntity(root: string, kind: string, localId: string, co
   return { metadata, body, prompts: [] };
 }
 
+// Editor-only type for a leaf entity's apply.ts, from the generated n8c.types.ts.
+// The annotation is erasable, so Node still runs the file unchanged.
+const LEAF_TYPE: Record<string, string> = { prompts: 'Prompt', promptContents: 'PromptContent' };
+
 export function writeEntity(root: string, kind: string, localId: string, metadata: any, body: unknown): void {
   const dir = entityDir(root, kind, localId);
   mkdirSync(dir, { recursive: true });
@@ -128,5 +132,7 @@ export function writeEntity(root: string, kind: string, localId: string, metadat
   // Materialize as a plain function that returns the JSON (the reader awaits the
   // result, so it can be made `async` by hand later if real logic is added).
   const json = JSON.stringify(body, null, 2).replace(/\n/g, '\n  ');
-  writeFileSync(join(dir, 'apply.ts'), `export default function () {\n  return ${json};\n}\n`);
+  const t = LEAF_TYPE[kind];
+  const head = t ? `import type { ${t} } from '../../n8c.types.ts';\n\n` : '';
+  writeFileSync(join(dir, 'apply.ts'), `${head}export default function ()${t ? `: ${t}` : ''} {\n  return ${json};\n}\n`);
 }

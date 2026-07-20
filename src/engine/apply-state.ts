@@ -16,7 +16,7 @@ import { desiredByKind, activeKinds, type State } from './state.ts';
 // version timelines stay aligned across kinds and `restore <generation>` rolls back
 // all kinds to one coherent point (see cli restore). Kinds with no live docs are
 // skipped (nothing to snapshot).
-export async function applyFromState(store: Store, root: string, ctx: EntityContext, state: State): Promise<State> {
+export async function applyFromState(store: Store, root: string, ctx: EntityContext, state: State, opts: { message?: string } = {}): Promise<State> {
   const applied: State['applied'] = { at: new Date().toISOString(), ok: [], failed: [] };
   const codeByNode = (await buildSources(dirname(root))).codeByNode;
   const generation = nextVersionId(); // shared release id for every kind in THIS apply
@@ -34,10 +34,20 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
     for (const r of rows) {
       try {
         if (r.action === 'delete') {
-          const n8nId = mapping[r.localId] as string | undefined;
-          // ARCHIVE (soft, recoverable via unarchive) rather than hard-delete on
-          // a shared instance.
-          if (n8nId && ctx.n8n) await (kind === 'workflows' ? ctx.n8n.archiveWorkflow(String(n8nId)) : ctx.n8n.deleteWorkflow?.(String(n8nId)));
+          const mapped = mapping[r.localId] as any;
+          // workflows: ARCHIVE (soft, recoverable via unarchive) rather than
+          // hard-delete on a shared instance. credentials: mapping holds {id,name},
+          // so delete by .id. DB-only kinds (prompts/prompt-content) touch no server.
+          if (ctx.n8n && mapped !== undefined) {
+            try {
+              if (kind === 'workflows') await ctx.n8n.archiveWorkflow(String(mapped));
+              else if (kind === 'credentials') await ctx.n8n.deleteCredential?.(String(mapped?.id ?? mapped));
+            } catch (e: any) {
+              // Already gone on n8n (deleted here earlier, or by hand) — deleting is
+              // idempotent, so a 404 means the desired end state is already true.
+              if (!String(e?.message ?? e).includes('404')) throw e;
+            }
+          }
           delete mapping[r.localId];
           const remaining = (await store.getLive(kind)).filter((d) => d.localId !== r.localId);
           await store.withTransaction((s) => store.putLive(kind, remaining, s));
@@ -79,7 +89,7 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
       if (!live.length) continue;
       const bundle = checksum(live.map((d) => d.checksum).sort());
       await store.withTransaction(async (s) => {
-        await store.createSnapshot(kind, generation, live, bundle, s);
+        await store.createSnapshot(kind, generation, live, bundle, s, opts.message);
         await store.markActive(kind, generation, s);
       });
     }

@@ -16,7 +16,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof
 // engine skips the promptContents kind entirely when this store is active.
 export class SqliteStore implements Store {
   readonly capabilities: StoreCapabilities = { promptContents: false, backup: false };
-  private db: DatabaseSync;
+  private db: InstanceType<typeof DatabaseSync>; // DatabaseSync is a runtime value (loaded via require), so query its instance type
   private txDepth = 0;
 
   constructor(file: string) { this.db = new DatabaseSync(file); this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;'); }

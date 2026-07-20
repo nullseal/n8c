@@ -245,8 +245,8 @@
       </div>
       <div class="card">
         <div class="ic">⚡</div>
-        <h3>No build step, no server needed</h3>
-        <p>Runs its TypeScript sources directly on modern Node — no compile. Store history in <b>MongoDB</b> for teams, or in a single <b>SQLite</b> file (built-in <code>node:sqlite</code>) with zero setup.</p>
+        <h3>Lightweight, no server needed</h3>
+        <p>Install in seconds — dependency-light (just <code>commander</code> + your DB driver). Store history in <b>MongoDB</b> for teams, or in a single <b>SQLite</b> file (built-in <code>node:sqlite</code>) with zero setup.</p>
       </div>
     </div>
   </div>
@@ -259,7 +259,7 @@
     <div class="table-wrap" style="margin-top:24px">
       <div class="table-scroll">
       <table class="cmds">
-        <tr><td class="c">Node.js ≥ 22.18</td><td class="d">Or ≥ 23.6. n8c ships TypeScript and relies on Node's built-in type stripping, enabled by default from these versions. On 22.6–22.17 use the <code>--experimental-strip-types</code> flag.</td></tr>
+        <tr><td class="c">Node.js ≥ 22.18</td><td class="d">Or ≥ 23.6. n8c reads your project's <code>.ts</code> entity files at runtime using Node's built-in type stripping, on by default from these versions. On 22.6–22.17 use the <code>--experimental-strip-types</code> flag.</td></tr>
         <tr><td class="c">A database</td><td class="d"><b>MongoDB</b> (teams / shared instances) <b>or SQLite</b> (a single local file, zero setup via built-in <code>node:sqlite</code>). See <a href="#backends">Storage backends</a>.</td></tr>
         <tr><td class="c">n8n</td><td class="d">With the <b>Public API</b> enabled (API 1.1.x) and an API key.</td></tr>
       </table>
@@ -431,10 +431,10 @@ MONGO_DB=n8c</code></pre></div>
         <tr><td class="c">n8c pull</td><td class="d">n8n + DB → files. <code>--no-export</code> = DB only.</td></tr>
         <tr><td class="c">n8c plan</td><td class="d">Diff files vs live → write <code>.states/n8c.state.&lt;env&gt;.json</code>. <code>--destroy</code> includes deletes.</td></tr>
         <tr><td class="c">n8c apply</td><td class="d">Execute the saved plan (push to n8n, then commit the DB). <code>--force</code> = plan + apply in one step.</td></tr>
-        <tr><td class="c">n8c list</td><td class="d">Version history for all kinds. <code>--full</code> shows untruncated checksums.</td></tr>
+        <tr><td class="c">n8c list</td><td class="d">Generation versions (releases), newest first — id, kinds covered, message. <code>--full</code> untruncates.</td></tr>
         <tr><td class="c">n8c create</td><td class="d">Scaffold a <code>workflow</code> | <code>prompt</code> | <code>credential</code> | <code>node</code>.</td></tr>
-        <tr><td class="c">n8c restore &lt;ref&gt;</td><td class="d">Roll <b>all kinds</b> back to a release/version; <code>--apply</code> deploys it now.</td></tr>
-        <tr><td class="c">n8c drop &lt;ref…&gt;</td><td class="d">Delete versions from history (a generation drops all kinds; the active one can't be dropped).</td></tr>
+        <tr><td class="c">n8c restore &lt;generation&gt;</td><td class="d">Roll <b>every kind</b> back to a generation version; <code>--apply</code> deploys it now.</td></tr>
+        <tr><td class="c">n8c drop &lt;generation…&gt;</td><td class="d">Delete generation versions from history (each drops across all kinds; the active one can't be dropped).</td></tr>
         <tr><td class="c">n8c db export</td><td class="d">Dump all n8c collections to a backup file (MongoDB only).</td></tr>
         <tr><td class="c">n8c db import</td><td class="d">Recreate + re-import collections from a backup file (MongoDB only).</td></tr>
       </table>

@@ -7,6 +7,32 @@ import { MemoryStore } from '../src/store/memory.ts';
 import { mapCredentialsFromWorkflows } from '../src/engine/environment.ts';
 import { materializeWorkflowSource } from '../src/engine/materialize.ts';
 import { workflow as workflowDesc } from '../src/entities/workflow.ts';
+import { credential as credentialDesc } from '../src/entities/credential.ts';
+import { pullEntity } from '../src/engine/pull.ts';
+
+test('a node-referenced credential the API cannot list survives the credential pull', async () => {
+  // Regression: the credential pull writes the mapping with replace-semantics from
+  // listCredentials. A credential in another n8n project isn't listed, so pulling
+  // credentials AFTER mapping-from-nodes wiped it and workflow export then failed
+  // with "has no localId mapping — run `n8c pull` first" *during a pull*.
+  const store = new MemoryStore();
+  const listed = [{ id: 'VISIBLE', name: 'Mongo', type: 'mongoDb' }];
+  const wfs = [{ id: 'w1', name: 'Main', nodes: [
+    { id: 'n1', name: 'A', credentials: { mongoDb: { id: 'VISIBLE', name: 'Mongo' } } },
+    { id: 'n2', name: 'B', credentials: { openAiApi: { id: 'OTHER_PROJECT', name: 'OpenAI account' } } },
+  ] }];
+  const ctx = { env: 'staging', encrypted: false,
+    n8n: { listWorkflows: async () => wfs, listCredentials: async () => listed },
+    getDefinitions: (k: string) => store.getDefinitions('staging', k) } as any;
+
+  // pull order: credentials first (replace), then map-from-nodes (merge on top)
+  await pullEntity(store, credentialDesc, '/tmp', ctx);
+  await mapCredentialsFromWorkflows(store, ctx);
+
+  const defs: any = await store.getDefinitions('staging', 'credentials');
+  const ids = Object.values(defs).map((v: any) => v.id).sort();
+  assert.deepEqual(ids, ['OTHER_PROJECT', 'VISIBLE'], 'the unlistable credential is still mapped');
+});
 
 test('workflow export throws when a node credential has no localId mapping (no raw-id fallback)', async () => {
   const root = mkdtempSync(join(tmpdir(), 'n8c-'));

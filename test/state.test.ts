@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { computePlan, desiredBundleChecksum, writeState, readState, statePath, type State } from '../src/engine/state.ts';
 import { applyFromState } from '../src/engine/apply-state.ts';
+import { checksum } from '../src/checksum.ts';
 
 function scaffold(): { root: string; nroot: string } {
   const root = mkdtempSync(join(tmpdir(), 'n8c-'));
@@ -96,17 +97,82 @@ test('applyFromState pushes a workflow THEN commits; server-drift deploys even i
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('computePlan: a credential already in the env mapping is noop (no duplicate on n8n)', async () => {
+test('computePlan: a credential already in the env mapping is never re-created (no duplicate on n8n)', async () => {
   const { root, nroot } = scaffold();
   try {
     writeCredential(nroot, 'c1', 'OpenAI');
     const store = new MemoryStore();
-    // already bound to this env's n8n (via pull / environment init) — NOT via apply,
-    // so the credential live docs are empty. Must still read as noop, not create.
+    // already bound to this env's n8n (via pull) — NOT via apply, so the credential
+    // live docs are empty. It must never read as `create` (that would duplicate on
+    // n8n); with no baseline for the file it reads as `update`, which PATCHes in place.
     await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c1: { id: 'N1', name: 'OpenAI' } }, s));
     const state = await computePlan(store, nroot, ctxOf(store), { destroy: false, version: '0' });
-    assert.equal(state.resources.find((r) => r.localId === 'c1')!.action, 'noop');
-    assert.equal(state.summary.create, 0);
+    assert.equal(state.resources.find((r) => r.localId === 'c1')!.action, 'update');
+    assert.equal(state.summary.create, 0, 'never creates a duplicate');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('deleting a credential file is reported as an orphan, and planned as delete with --destroy', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    // c1 has a file; c2 was deleted (mapping + live doc remain)
+    writeCredential(nroot, 'c1', 'Keep');
+    const store = new MemoryStore();
+    await store.withTransaction((s) => store.putDefinitions('default', 'credentials', {
+      c1: { id: 'N1', name: 'Keep' }, c2: { id: 'N2', name: 'Gone' },
+    }, s));
+    await store.withTransaction((s) => store.putLive('credentials', [
+      { localId: 'c2', name: 'Gone', body: { name: 'Gone', type: 'httpHeaderAuth' }, checksum: 'x' },
+    ], s));
+
+    // without --destroy: no delete planned, but reported as an orphan (not silent)
+    const plain = await computePlan(store, nroot, ctxOf(store), { destroy: false, version: '0' });
+    assert.equal(plain.resources.some((r) => r.action === 'delete'), false, 'never destroys implicitly');
+    assert.deepEqual(plain.orphans?.map((o) => `${o.kind}:${o.name}`), ['credentials:Gone'], 'orphan surfaced');
+
+    // with --destroy: planned as a delete
+    const destroy = await computePlan(store, nroot, ctxOf(store), { destroy: true, version: '0' });
+    const del = destroy.resources.find((r) => r.action === 'delete')!;
+    assert.equal(del.kind, 'credentials');
+    assert.equal(del.localId, 'c2');
+    assert.equal(destroy.summary.delete, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('deleting a prompt-content file is reported/planned the same way', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    await store.withTransaction((s) => store.putLive('promptContents', [
+      { localId: 'pc1', name: 'main_triage', body: { key: 'main_triage' }, checksum: 'x' },
+    ], s));
+    const plain = await computePlan(store, nroot, ctxOf(store), { destroy: false, version: '0' });
+    assert.deepEqual(plain.orphans?.map((o) => o.kind), ['promptContents']);
+    const destroy = await computePlan(store, nroot, ctxOf(store), { destroy: true, version: '0' });
+    assert.equal(destroy.resources.find((r) => r.kind === 'promptContents')!.action, 'delete');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('applyFromState deletes a credential via deleteCredential (not deleteWorkflow) and drops its mapping', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c2: { id: 'N2', name: 'Gone' } }, s));
+    await store.withTransaction((s) => store.putLive('credentials', [
+      { localId: 'c2', name: 'Gone', body: { name: 'Gone', type: 'httpHeaderAuth' }, checksum: 'x' },
+    ], s));
+    const deleted: string[] = [];
+    const ctx = { ...ctxOf(store), n8n: { listWorkflows: async () => [], deleteCredential: async (id: string) => { deleted.push(id); } } } as any;
+    const state: State = {
+      env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '',
+      summary: { create: 0, update: 0, noop: 0, delete: 1 },
+      resources: [{ kind: 'credentials', localId: 'c2', name: 'Gone', action: 'delete', fromChecksum: 'x', toChecksum: null }],
+      applied: null,
+    };
+    await applyFromState(store, nroot, ctx, state);
+    assert.deepEqual(deleted, ['N2'], 'deleted by the mapped n8n id, via deleteCredential');
+    assert.deepEqual(await store.getLive('credentials'), [], 'live doc removed');
+    assert.deepEqual(await store.getDefinitions('default', 'credentials'), {}, 'mapping removed');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -125,16 +191,34 @@ test('computePlan: an unmapped credential is create', async () => {
 const credCtx = (store: MemoryStore, serverCreds: any[]) =>
   ({ env: 'default', encrypted: false, n8n: { listWorkflows: async () => [], listCredentials: async () => serverCreds }, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any);
 
-async function planCredAction(server: any[], mapping: any): Promise<string> {
+// `seedLive: false` reproduces a credential that was pulled/mapped but never
+// applied — i.e. no live doc, so there's no baseline for the file's content.
+async function planCredAction(server: any[], mapping: any, opts: { seedLive?: boolean } = {}): Promise<string> {
   const { root, nroot } = scaffold();
   try {
     writeCredential(nroot, 'c1', 'OpenAI', 'openAiApi');
     const store = new MemoryStore();
     if (mapping) await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c1: mapping }, s));
+    if (opts.seedLive !== false) {
+      const body = { name: 'OpenAI', type: 'openAiApi' }; // matches writeCredential's file
+      await store.withTransaction((s) => store.putLive('credentials', [{ localId: 'c1', name: 'OpenAI', body, checksum: checksum(body) }], s));
+    }
     const state = await computePlan(store, nroot, credCtx(store, server), { destroy: false, version: '0' });
     return state.resources.find((r) => r.localId === 'c1')!.action;
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
+
+test('credential with NO live baseline → update (a file edit must never read as "no changes")', async () => {
+  // regression: editing `data` on a pulled-but-never-applied credential showed noop,
+  // because fileChanged required a live doc. A secret can't be read back from n8n,
+  // so without a baseline we must assume the file differs.
+  const action = await planCredAction(
+    [{ id: 'N1', name: 'OpenAI', type: 'openAiApi', updatedAt: 'T1' }],
+    { id: 'N1', name: 'OpenAI', updatedAt: 'T1' },
+    { seedLive: false },
+  );
+  assert.equal(action, 'update');
+});
 
 test('credential server-diff: mapped + server matches (name/type/updatedAt) → noop', async () => {
   const action = await planCredAction([{ id: 'N1', name: 'OpenAI', type: 'openAiApi', updatedAt: 'T1' }], { id: 'N1', name: 'OpenAI', updatedAt: 'T1' });
@@ -211,6 +295,21 @@ test('apply bumps ALL kinds to one shared generation versionId (coherent release
     assert.equal(vP.length, 1); assert.equal(vPC.length, 1);
     assert.equal(vP[0].versionId, vPC[0].versionId, 'prompts and prompt-content share ONE generation id');
     assert.ok(vP[0].isActive && vPC[0].isActive, 'the generation is active for every kind');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('apply records the --message on the release (every kind of the generation)', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    writePrompt(nroot, 'p1', 'main', 'hi');
+    writePromptContent(nroot, 'pc1', 'main_triage', 'runtime');
+    const store = new MemoryStore();
+    const ctx = ctxOf(store);
+    await applyFromState(store, nroot, ctx, await computePlan(store, nroot, ctx, { destroy: false, version: '0' }), { message: 'ship triage v2' });
+    for (const kind of ['prompts', 'promptContents']) {
+      const active = (await store.listVersions(kind)).find((v) => v.isActive)!;
+      assert.equal(active.message, 'ship triage v2', `message recorded on ${kind}`);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

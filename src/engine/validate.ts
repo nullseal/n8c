@@ -71,16 +71,28 @@ export async function validateAll(root: string, ctx: EntityContext, _store: Stor
     }
   }
 
-  // (4) encryption key required when any credential carries data and encryption is on
-  if (ctx.encrypted && !ctx.encryptionKey) {
-    for (const cid of listEntityIds(root, 'credentials')) {
-      if (!existsSync(join(entityDir(root, 'credentials', cid), 'apply.ts'))) continue;
-      const { body } = await readEntity(root, 'credentials', cid);
-      if ((body as any)?.data !== undefined) {
-        problems.push('N8C_CREDENTIAL_ENCRYPTION_KEY required to encrypt credential data');
-        break;
+  // (4) credential data sanity: an `undefined` value means the referenced env var
+  // isn't set (e.g. `data: { token: process.env.MY_TOKEN }` with MY_TOKEN missing).
+  // JSON drops it, so the secret would silently become `{}` — and pushing that can
+  // WIPE the real secret in n8n. Fail loudly instead.
+  let needsKey = false;
+  for (const cid of listEntityIds(root, 'credentials')) {
+    if (!existsSync(join(entityDir(root, 'credentials', cid), 'apply.ts'))) continue;
+    const { body, metadata } = await readEntity(root, 'credentials', cid);
+    const data = (body as any)?.data;
+    if (data === undefined) continue;
+    needsKey = true;
+    if (data && typeof data === 'object') {
+      const missing = Object.keys(data).filter((k) => (data as any)[k] === undefined);
+      if (missing.length) {
+        problems.push(`credential "${metadata.name ?? cid}": ${missing.map((m) => `data.${m}`).join(', ')} is undefined — ` +
+          `is the referenced environment variable set? (n8c reads .env / .env.<env> from the project root)`);
       }
     }
+  }
+  // encryption key required when any credential carries data and encryption is on
+  if (ctx.encrypted && !ctx.encryptionKey && needsKey) {
+    problems.push('N8C_CREDENTIAL_ENCRYPTION_KEY required to encrypt credential data');
   }
 
   return problems;

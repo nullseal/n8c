@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { prompt } from '../src/entities/prompt.ts';
-import { pullEntity } from '../src/engine/pull.ts';
+import { pullEntity, commitPullGeneration } from '../src/engine/pull.ts';
 import { exportDocs } from '../src/engine/transfer.ts';
 import { checksum } from '../src/checksum.ts';
 
@@ -16,33 +16,64 @@ async function setLive(store: MemoryStore, body: unknown) {
     store.putLive('prompts', [{ localId: 'p1', name: 'g', body, checksum: checksum(body) }], s));
 }
 
-test('pull dedups against ANY existing version, not just the newest', async () => {
+test('pullEntity fetches docs + checksum and writes NO version (generation is committed separately)', async () => {
   const store = new MemoryStore();
-  await setLive(store, { v: 'A' }); await pullEntity(store, prompt, '/tmp', ctx());
-  await setLive(store, { v: 'B' }); await pullEntity(store, prompt, '/tmp', ctx());
-  assert.equal((await store.listVersions('prompts')).length, 2);
-
-  // back to state A: matches version 1 (which is NOT the newest) -> must dedup
   await setLive(store, { v: 'A' });
   const r = await pullEntity(store, prompt, '/tmp', ctx());
-  assert.equal(r.deduped, true);
-  assert.equal(r.versionId, undefined);
-  assert.equal((await store.listVersions('prompts')).length, 2);
+  assert.equal(r.kind, 'prompts');
+  assert.equal(r.docs.length, 1, 'docs returned so the CLI can export straight from them');
+  assert.equal(r.checksum, checksum(r.docs.map((d) => d.checksum).sort()));
+  assert.equal((await store.listVersions('prompts')).length, 0, 'pull itself creates no version');
+  assert.deepEqual((await store.getLive('prompts'))[0].body, { v: 'A' }, 'live untouched');
 });
 
-test('pull returns the pulled docs (new AND deduped) so export never re-reads the store', async () => {
+test('pull sets the live baseline for EVERY kind, so later generations are complete', async () => {
+  // Regression (two `*` in `n8c list`): apply snapshots a generation from the LIVE
+  // docs and skips kinds that have none. Workflow live was only written by an apply
+  // that actually pushed a workflow, so an apply with no workflow changes produced a
+  // generation MISSING workflows — leaving their active pointer on an older
+  // generation, and making `restore <generation>` silently skip workflows.
+  const { workflow } = await import('../src/entities/workflow.ts');
+  const store = new MemoryStore();
+  const ctx = {
+    env: 'default', encrypted: false,
+    n8n: { listWorkflows: async () => [{ id: 'W1', name: 'Main', nodes: [], connections: {} }] },
+    getDefinitions: (k: string) => store.getDefinitions('default', k),
+  } as any;
+  const r = await pullEntity(store, workflow, '/tmp', ctx);
+  const live = await store.getLive('workflows');
+  assert.equal(live.length, 1, 'workflows have a live baseline after pull');
+  assert.deepEqual(live.map((d) => d.checksum), r.docs.map((d) => d.checksum));
+});
+
+test('an unchanged re-pull yields the same bundle checksum', async () => {
   const store = new MemoryStore();
   await setLive(store, { v: 'A' });
   const first = await pullEntity(store, prompt, '/tmp', ctx());
-  assert.equal(first.deduped, false);
-  assert.equal(first.docs.length, 1, 'new pull returns docs');
-
-  // re-pull identical state → deduped, but docs must STILL be returned so the CLI
-  // can export straight from them (regression: a deduped pull used to re-read a
-  // stored version, which crashed when that version had no docs).
   const second = await pullEntity(store, prompt, '/tmp', ctx());
-  assert.equal(second.deduped, true);
-  assert.deepEqual(second.docs, first.docs, 'deduped pull returns the same docs');
+  assert.equal(second.checksum, first.checksum);
+  assert.deepEqual(second.docs, first.docs);
+});
+
+test('commitPullGeneration writes ONE generation across every kind and marks it active', async () => {
+  const store = new MemoryStore();
+  const gen = '2026-07-20T12:00:00.000Z';
+  const results = [
+    { kind: 'workflows', count: 1, checksum: 'cw', docs: [{ localId: 'w1', name: 'W', body: {}, checksum: 'w' }] },
+    { kind: 'prompts', count: 1, checksum: 'cp', docs: [{ localId: 'p1', name: 'P', body: {}, checksum: 'p' }] },
+    { kind: 'credentials', count: 0, checksum: 'cc', docs: [] }, // empty kind → skipped
+  ];
+  await commitPullGeneration(store, gen, results, 'pulled from staging');
+
+  for (const kind of ['workflows', 'prompts']) {
+    const versions = await store.listVersions(kind);
+    assert.equal(versions.length, 1, `${kind} has one version`);
+    assert.equal(versions[0].versionId, gen, `${kind} shares the SAME generation id`);
+    assert.equal(versions[0].isActive, true, `${kind} generation is active`);
+    assert.equal(versions[0].message, 'pulled from staging');
+    assert.equal((await store.getVersion(kind, gen)).length, 1, `${kind} version docs stored`);
+  }
+  assert.equal((await store.listVersions('credentials')).length, 0, 'empty kind snapshots nothing');
 });
 
 test('exportDocs renders straight from docs, no store lookup', async () => {
@@ -55,29 +86,4 @@ test('exportDocs renders straight from docs, no store lookup', async () => {
     assert.match(applyTs, /"key": "main"/);
     assert.ok(existsSync(join(root, 'prompts', 'p1', 'metadata.json')));
   } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
-test('pull marks the pulled version active but never changes live docs', async () => {
-  const store = new MemoryStore();
-  await setLive(store, { v: 'A' });
-  const r = await pullEntity(store, prompt, '/tmp', ctx());
-
-  const live = await store.getLive('prompts');
-  assert.deepEqual(live[0].body, { v: 'A' }, 'live must be untouched by pull');
-  const versions = await store.listVersions('prompts');
-  assert.equal(versions.filter((v) => v.isActive).length, 1, 'exactly one active version after pull');
-  assert.equal(versions.find((v) => v.isActive)!.versionId, r.versionId, 'the just-pulled version is active');
-});
-
-test('re-pull that dedups re-marks the matching version active', async () => {
-  const store = new MemoryStore();
-  await setLive(store, { v: 'A' }); const a = await pullEntity(store, prompt, '/tmp', ctx());
-  await setLive(store, { v: 'B' }); await pullEntity(store, prompt, '/tmp', ctx());
-  // back to A: dedups to version 1, which must become active again
-  await setLive(store, { v: 'A' });
-  const r = await pullEntity(store, prompt, '/tmp', ctx());
-  assert.equal(r.deduped, true);
-  const versions = await store.listVersions('prompts');
-  assert.equal(versions.filter((v) => v.isActive).length, 1);
-  assert.equal(versions.find((v) => v.isActive)!.versionId, a.versionId, 'matching (older) version re-activated');
 });

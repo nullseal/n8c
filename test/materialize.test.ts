@@ -23,7 +23,8 @@ test('materialize emits named-const nodes + jsCode template literal', () => {
   assert.match(src, /const startCode = `return items;`;/);
   assert.match(src, /const start = \{/);
   assert.match(src, /"jsCode": startCode/);
-  assert.match(src, /export default \(\) => \(\{/);
+  assert.match(src, /export default \(\): Workflow => \(\{/);
+  assert.match(src, /^import type \{ Workflow \} from '\.\.\/\.\.\/n8c\.types\.ts';/, 'editor-only type import (erasable)');
   assert.match(src, /"nodes": \[start\]/);
 });
 

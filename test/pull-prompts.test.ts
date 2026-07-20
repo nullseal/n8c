@@ -23,7 +23,7 @@ test('pull --from-nodes extracts prompts with type + provenance and snapshots', 
   const store = new MemoryStore();
   const r = await pullPromptsFromNodes(store, ctx(store));
   assert.equal(r.count, 2); // system + user
-  const docs = await store.getVersion('prompts', r.versionId!);
+  const docs = r.docs;
   const sys = docs.find((d) => (d.body as any).type === 'system')!;
   assert.equal((sys.body as any).content, 'you are triage');
   assert.equal((sys.body as any).source.workflow, 'wf-uuid');
@@ -85,23 +85,23 @@ test('skips archived workflows', async () => {
     { id: 'b', name: 'B', isArchived: true, nodes: [{ name: 'n', type: 'x.agent', parameters: { options: { systemMessage: 'drop' } } }] },
   ];
   const r = await pullPromptsFromNodes(store, ctx(store, wfs));
-  const contents = (await store.getVersion('prompts', r.versionId!)).map((d) => (d.body as any).content);
+  const contents = r.docs.map((d) => (d.body as any).content);
   assert.deepEqual(contents, ['keep']);
 });
 
-test('re-pull reuses localIds by provenance and dedups', async () => {
+test('re-pull reuses localIds by provenance (stable across edits, even before a generation is committed)', async () => {
   const store = new MemoryStore();
   const r1 = await pullPromptsFromNodes(store, ctx(store));
-  const firstSysId = (await store.getVersion('prompts', r1.versionId!)).find((d) => (d.body as any).type === 'system')!.localId;
+  const firstSysId = r1.docs.find((d) => (d.body as any).type === 'system')!.localId;
 
+  // unchanged re-pull → identical bundle checksum and the SAME localIds
   const r2 = await pullPromptsFromNodes(store, ctx(store));
-  assert.equal(r2.deduped, true, 'unchanged re-pull dedups');
-  assert.equal((await store.listVersions('prompts')).length, 1);
+  assert.equal(r2.checksum, r1.checksum, 'unchanged re-pull yields the same bundle checksum');
+  assert.equal(r2.docs.find((d) => (d.body as any).type === 'system')!.localId, firstSysId, 'localId reused');
 
-  // change the prompt -> new version, but SAME localId (provenance matched)
+  // edit the prompt -> different checksum, but SAME localId (provenance matched)
   const changed = [{ ...workflows[0], nodes: [{ name: 'Triage', type: 'x.agent', parameters: { text: '=user', options: { systemMessage: 'you are triage v2' } } }] }];
   const r3 = await pullPromptsFromNodes(store, ctx(store, changed));
-  assert.equal(r3.deduped, false);
-  const sysId = (await store.getVersion('prompts', r3.versionId!)).find((d) => (d.body as any).type === 'system')!.localId;
-  assert.equal(sysId, firstSysId, 'same provenance keeps the same localId across edits');
+  assert.notEqual(r3.checksum, r1.checksum, 'edited prompt changes the bundle checksum');
+  assert.equal(r3.docs.find((d) => (d.body as any).type === 'system')!.localId, firstSysId, 'same provenance keeps the same localId across edits');
 });

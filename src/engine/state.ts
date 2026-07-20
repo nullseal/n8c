@@ -16,11 +16,15 @@ export interface Resource {
   nodes?: { name: string; status: string }[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
 }
+// An entity that still exists in the DB / on n8n but has no file — planned as a
+// delete only with --destroy, otherwise reported so `plan` never hides it.
+export interface Orphan { kind: string; localId: string; name: string; }
 export interface State {
   env: string; n8cVersion: string; createdAt: string;
   desiredChecksum: string;
   summary: { create: number; update: number; noop: number; delete: number };
   resources: Resource[];
+  orphans?: Orphan[];
   applied: { at: string; ok: string[]; failed: { localId: string; error: string }[] } | null;
 }
 
@@ -80,6 +84,12 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   // prompts + promptContents: DB-live diff (no n8n). prompts = build-time prompts;
   // promptContents = runtime docs the load_prompts node reads (Mongo-only — dropped
   // by activeKinds when the store doesn't serve it). Both are DB-only.
+  // Entities that exist in the DB/on n8n but no longer have a file — i.e. you
+  // deleted the directory. Deletes are only PLANNED with --destroy (the instance is
+  // shared); without it they're collected as `orphans` so the plan can still say
+  // they exist instead of silently ignoring them.
+  const orphans: Orphan[] = [];
+
   for (const dbKind of activeKinds(ctx).filter((k) => k === 'prompts' || k === 'promptContents')) {
     const desired = await buildDocs(entityByKind[dbKind], root, ctx);
     const liveById = new Map((await store.getLive(dbKind)).map((d) => [d.localId, d]));
@@ -87,6 +97,12 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
       const prev = liveById.get(d.localId);
       const action: Action = !prev ? 'create' : prev.checksum === d.checksum ? 'noop' : 'update';
       resources.push({ kind: dbKind, localId: d.localId, name: d.name, action, fromChecksum: prev?.checksum ?? null, toChecksum: d.checksum });
+    }
+    const desiredIds = new Set(desired.map((d) => d.localId));
+    for (const [localId, live] of liveById) {
+      if (desiredIds.has(localId)) continue;
+      if (!opts.destroy) { orphans.push({ kind: dbKind, localId, name: live.name }); continue; }
+      resources.push({ kind: dbKind, localId, name: live.name, action: 'delete', fromChecksum: live.checksum, toChecksum: null });
     }
   }
 
@@ -111,6 +127,12 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
       const body = d.body as any;
       const mapped = credDefs[d.localId] as { id: string; name: string; updatedAt?: string } | undefined;
       const prev = liveById.get(d.localId);
+      // A credential's secret can never be read back from n8n, so the ONLY baseline
+      // for the file's content is the live doc written by a previous apply. With no
+      // live doc we cannot prove the file matches what's deployed — treat it as an
+      // update rather than silently skipping a real edit (the exact trap: editing
+      // `data` on a pulled-but-never-applied credential showed "no changes").
+      const fileChanged = prev === undefined || prev.checksum !== d.checksum;
       let action: Action;
       if (!mapped) action = 'create';
       else if (listed) {
@@ -119,13 +141,21 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
         else {
           const nameTypeDrift = server.name !== body.name || String(server.type) !== String(body.type);
           const externalEdit = mapped.updatedAt !== undefined && String(server.updatedAt) !== String(mapped.updatedAt);
-          const fileChanged = prev !== undefined && prev.checksum !== d.checksum;
           action = (nameTypeDrift || externalEdit || fileChanged) ? 'update' : 'noop';
         }
       } else {
-        action = prev !== undefined && prev.checksum !== d.checksum ? 'update' : 'noop';
+        action = fileChanged ? 'update' : 'noop';
       }
       resources.push({ kind: 'credentials', localId: d.localId, name: d.name, action, fromChecksum: prev?.checksum ?? null, toChecksum: d.checksum });
+    }
+    // A credential is "known" if it has a live doc OR an env mapping; either way,
+    // no file means you deleted it.
+    const desiredIds = new Set(desired.map((d) => d.localId));
+    for (const localId of new Set([...liveById.keys(), ...Object.keys(credDefs)])) {
+      if (desiredIds.has(localId)) continue;
+      const name = liveById.get(localId)?.name ?? (credDefs[localId] as any)?.name ?? localId;
+      if (!opts.destroy) { orphans.push({ kind: 'credentials', localId, name }); continue; }
+      resources.push({ kind: 'credentials', localId, name, action: 'delete', fromChecksum: liveById.get(localId)?.checksum ?? null, toChecksum: null });
     }
   }
 
@@ -133,7 +163,8 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx);
   for (const r of rows) {
     const action = statusToAction(r.status);
-    if (action === 'delete' && !opts.destroy) continue; // never delete implicitly on a shared instance
+    // never delete implicitly on a shared instance — report it as an orphan instead
+    if (action === 'delete' && !opts.destroy) { orphans.push({ kind: 'workflows', localId: r.localId, name: r.name }); continue; }
     resources.push({
       kind: 'workflows', localId: r.localId, name: r.name, action,
       fromChecksum: action === 'create' ? null : (r.checksum || null),
@@ -148,7 +179,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   return {
     env: ctx.env, n8cVersion: opts.version, createdAt: new Date().toISOString(),
     desiredChecksum: await desiredBundleChecksum(root, ctx),
-    summary, resources, applied: null,
+    summary, resources, orphans, applied: null,
   };
 }
 

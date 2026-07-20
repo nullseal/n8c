@@ -1,54 +1,127 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderVersion, resolveVersionRef, pickVersion, buildProgram, renderApplyTail } from '../src/cli.ts';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration } from '../src/cli.ts';
 import { setStyle } from '../src/style.ts';
 
-test('pickVersion: explicit ref, else active, else newest, else throws', () => {
-  const vs = [
-    { versionId: 'v1', checksum: 'aaaa', isActive: false },
-    { versionId: 'v2', checksum: 'bbbb', isActive: true },
-    { versionId: 'v3', checksum: 'cccc', isActive: false },
-  ];
-  assert.equal(pickVersion(vs, 'v1'), 'v1');           // explicit
-  assert.equal(pickVersion(vs), 'v2');                  // active
-  assert.equal(pickVersion(vs.map((v) => ({ ...v, isActive: false }))), 'v3'); // no active → newest
-  assert.throws(() => pickVersion([]), /no versions available/);
+const perKind = () => [
+  { kind: 'workflow', versions: [{ versionId: 'V1', isActive: false, checksum: 'aaa' }, { versionId: 'V2', isActive: true, message: 'rel2', checksum: 'bbb' }] },
+  { kind: 'prompt', versions: [{ versionId: 'V2', isActive: true, checksum: 'ccc' }, { versionId: 'Vp', isActive: false, message: 'pull', checksum: 'ddd' }] },
+];
+
+test('two generations with IDENTICAL content still get distinct hashes (references stay unambiguous)', () => {
+  // Regression: the hash used to be purely content-addressed, so a pull followed by
+  // an apply that changed nothing produced two rows with the SAME hash — and
+  // `n8c drop <hash>` failed with "ambiguous generation hash (2 matches)".
+  const same = [{ versionId: 'V1', isActive: false, checksum: 'aaa' }, { versionId: 'V2', isActive: true, checksum: 'aaa' }];
+  const gens = groupByGeneration([{ kind: 'workflows', versions: same }]);
+  assert.equal(gens.length, 2);
+  assert.notEqual(gens[0].hash, gens[1].hash, 'same content, different generation → different hash');
+  // …and each still resolves on its own
+  assert.equal(resolveGenerationRef(gens, gens[0].hash.slice(0, 8)), gens[0].versionId);
+  assert.equal(resolveGenerationRef(gens, gens[1].hash.slice(0, 8)), gens[1].versionId);
 });
 
-test('resolveVersionRef matches exact id or unique hash prefix', () => {
-  const vs = [
-    { versionId: '2026-01-01T00:00:00Z', checksum: 'a1b2c3d4ffff' },
-    { versionId: '2026-01-02T00:00:00Z', checksum: 'a1b2ffffffff' },
-    { versionId: '2026-01-03T00:00:00Z', checksum: 'bbeef00000000' },
-  ];
-  assert.equal(resolveVersionRef(vs, '2026-01-02T00:00:00Z'), '2026-01-02T00:00:00Z');
-  assert.equal(resolveVersionRef(vs, 'bb'), '2026-01-03T00:00:00Z');              // unique prefix
-  assert.throws(() => resolveVersionRef(vs, 'a1b2'), /ambiguous/);                 // 2 matches
-  assert.throws(() => resolveVersionRef(vs, 'nope'), /no version matching/);
+test('the hash still changes when content changes', () => {
+  const a = groupByGeneration([{ kind: 'workflows', versions: [{ versionId: 'V1', isActive: false, checksum: 'aaa' }] }])[0];
+  const b = groupByGeneration([{ kind: 'workflows', versions: [{ versionId: 'V1', isActive: false, checksum: 'bbb' }] }])[0];
+  assert.notEqual(a.hash, b.hash);
 });
 
-test('renderVersion truncates the message but keeps it full with --full', () => {
-  const long = 'x'.repeat(100);
-  const v = { isActive: true, versionId: '2026-01-01T00:00:00Z', checksum: 'a'.repeat(64), message: long };
-  const short = renderVersion(v, false);
-  const full = renderVersion(v, true);
-  assert.ok(short.includes('…'), 'truncated with ellipsis');
-  assert.ok(short.includes('aaaaaaaa') && !short.includes('a'.repeat(64)), 'short hash');
-  assert.ok(full.includes(long), 'full message kept');
-  assert.ok(full.includes('a'.repeat(64)), 'full hash');
-  assert.ok(short.startsWith('* '), 'active marker');
-  assert.ok(short.indexOf('aaaaaaaa') < short.indexOf('2026-01-01'), 'hash is left of the versionId date');
+test('groupByGeneration folds a shared versionId across kinds (newest-first) and hashes it', () => {
+  const gens = groupByGeneration(perKind());
+  assert.deepEqual(gens.map((g) => g.versionId), ['Vp', 'V2', 'V1'], 'newest (lexically) first');
+  const v2 = gens.find((g) => g.versionId === 'V2')!;
+  assert.deepEqual(v2.kinds, ['workflow', 'prompt'], 'both kinds folded into one release');
+  assert.equal(v2.active, true);
+  assert.equal(v2.message, 'rel2');
+  assert.match(v2.hash, /^[0-9a-f]{8,}$/, 'generation has a content hash');
+  // hash is content-addressed: same members → same hash, changed member → different
+  assert.equal(groupByGeneration(perKind()).find((g) => g.versionId === 'V2')!.hash, v2.hash, 'stable');
+  const changed = perKind(); changed[0].versions[1].checksum = 'zzz';
+  assert.notEqual(groupByGeneration(changed).find((g) => g.versionId === 'V2')!.hash, v2.hash, 'changes with content');
 });
 
-test('renderVersion colors the hash when style is on, raw when off (--pipe)', () => {
-  const v = { isActive: true, versionId: '2026-07-19T00:00:00Z', checksum: 'a1b2c3d4ef', message: 'hi' };
+test('resolveGenerationRef: exact versionId, unique hash prefix, else throws', () => {
+  const gens = groupByGeneration(perKind());
+  const v2 = gens.find((g) => g.versionId === 'V2')!;
+  assert.equal(resolveGenerationRef(gens, 'V2'), 'V2', 'exact versionId');
+  assert.equal(resolveGenerationRef(gens, v2.hash.slice(0, 8)), 'V2', 'short hash prefix resolves');
+  assert.throws(() => resolveGenerationRef(gens, 'nope'), /no generation matching/);
+});
+
+test('renderGeneration: `* <hash>: <msg>` then an indented per-entity row', () => {
+  setStyle(false);
+  const g = {
+    versionId: 'V1', hash: 'abcdef1234567890', kinds: ['workflows', 'prompts'], active: true, message: 'update abc',
+    members: [{ kind: 'workflows', checksum: '17257ffaaaaa' }, { kind: 'prompts', checksum: '0fde0b6abbbb' }],
+  };
+  const [head, row] = renderGeneration(g, false).split('\n');
+  assert.equal(head, '* abcdef12: update abc', 'generation hash leads, then the message');
+  assert.equal(row, '    prompt 0fde0b6a · workflow 17257ffa', 'each entity with its own short hash, kind-sorted');
+
+  const full = renderGeneration(g, true);
+  assert.ok(full.includes('abcdef1234567890'), 'full generation hash with --full');
+  assert.ok(full.includes('17257ffaaaaa'), 'full entity hash with --full');
+  assert.ok(full.includes('V1'), 'versionId shown with --full');
+});
+
+test('renderGeneration truncates a long message unless --full', () => {
+  setStyle(false);
+  const g = { versionId: 'V1', hash: 'abcdef12', kinds: ['workflows'], active: false, message: 'x'.repeat(80), members: [{ kind: 'workflows', checksum: 'aaaa1111' }] };
+  assert.ok(renderGeneration(g, false).includes('…'), 'truncated');
+  assert.ok(!renderGeneration(g, true).includes('…'), 'full = untruncated');
+});
+
+test('list groups by generation by default (no -g flag, no per-kind view)', () => {
+  const list = buildProgram().commands.find((c) => c.name() === 'list')!;
+  assert.ok(!list.options.some((o) => o.long === '--generations'), 'no -g flag — grouping is the default');
+  assert.ok(list.options.some((o) => o.long === '--full'), '--full still available');
+});
+
+test('pull has a -y/--yes bypass for the overwrite confirmation', () => {
+  const pull = buildProgram().commands.find((c) => c.name() === 'pull')!;
+  const yes = pull.options.find((o) => o.long === '--yes');
+  assert.ok(yes, 'pull has --yes');
+  assert.equal(yes!.short, '-y');
+});
+
+test('dirHasEntities: false when empty, true once an entity file exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
   try {
-    setStyle(true);
-    const colored = renderVersion(v, false);
-    assert.ok(colored.includes('\x1b[36ma1b2c3d4\x1b[0m'), 'hash wrapped in cyan');
+    assert.equal(dirHasEntities(root), false, 'empty root → pull would not overwrite anything');
+    const d = join(root, 'prompts', 'p1'); mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, 'apply.ts'), 'export default {};\n');
+    assert.equal(dirHasEntities(root), true, 'has a prompt entity → pull would overwrite it');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('resolveGenerationRef tolerates a trailing colon / whitespace from copy-pasting `list` output', () => {
+  // `n8c list` prints `<hash>: <message>` — double-clicking the token grabs the colon.
+  const gens = groupByGeneration([{ kind: 'workflows', versions: [{ versionId: 'V1', isActive: true, checksum: 'aaa' }] }]);
+  const h = gens[0].hash.slice(0, 8);
+  assert.equal(resolveGenerationRef(gens, `${h}:`), 'V1', 'trailing colon accepted');
+  assert.equal(resolveGenerationRef(gens, `  ${h}  `), 'V1', 'surrounding whitespace accepted');
+});
+
+test('resolveGenerationRef rejects an ambiguous hash prefix', () => {
+  const gens = [
+    { versionId: 'V1', hash: 'a1b2c3d4ffff', kinds: ['workflow'], active: false },
+    { versionId: 'V2', hash: 'a1b2ffffffff', kinds: ['workflow'], active: false },
+  ];
+  assert.equal(resolveGenerationRef(gens, 'a1b2c'), 'V1', 'unique prefix resolves');
+  assert.throws(() => resolveGenerationRef(gens, 'a1b2'), /ambiguous/, '2 matches → ambiguous');
+});
+
+test('renderGeneration is raw when style is off (--pipe), styled when on', () => {
+  const g = { versionId: '2026-07-19T00:00:00Z', hash: 'abcdef12', kinds: ['workflows'], active: true, message: 'hi', members: [{ kind: 'workflows', checksum: 'aaaa1111' }] };
+  try {
     setStyle(false);
-    const raw = renderVersion(v, false);
-    assert.ok(!raw.includes('\x1b['), 'no ANSI codes when style off');
+    assert.ok(!renderGeneration(g, false).includes('\x1b['), 'no ANSI codes when style off');
+    setStyle(true);
+    assert.ok(renderGeneration(g, false).includes('\x1b['), 'styled when on');
   } finally { setStyle(false); }
 });
 
