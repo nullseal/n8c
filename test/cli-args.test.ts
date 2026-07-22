@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration } from '../src/cli.ts';
+import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration, renderPlanIgnored } from '../src/cli.ts';
 import { setStyle } from '../src/style.ts';
 
 const perKind = () => [
@@ -182,4 +182,12 @@ test('drop command exists with variadic refs and no --force (active is never dro
   assert.ok(drop, 'drop command registered');
   assert.equal(drop.registeredArguments[0].variadic, true, 'takes multiple refs');
   assert.ok(!drop.options.some((o) => o.long === '--force'), 'no --force override');
+});
+
+test('renderPlanIgnored names archived workflows skipped for update, empty when none', () => {
+  setStyle(false);
+  assert.equal(renderPlanIgnored([]), '', 'nothing to say when no archived skips');
+  const out = renderPlanIgnored([{ kind: 'workflows', localId: 'w1', name: 'Old Flow' }]);
+  assert.ok(out.includes('Old Flow'), 'names the skipped workflow');
+  assert.ok(out.toLowerCase().includes('archiv'), 'explains it is archived');
 });

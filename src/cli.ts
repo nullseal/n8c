@@ -11,6 +11,7 @@ import { pullEntity } from './engine/pull.ts';
 import { exportVersion, exportDocs } from './engine/transfer.ts';
 import { createEntity } from './engine/generate.ts';
 import { initProject, initDb } from './engine/init.ts';
+import { verifyBeforeApply, refreshedServerFacts } from './engine/verify.ts';
 import { loadEnv } from './env.ts';
 import { hash, status as styleStatus, active, dim, info, notice, ok, danger, setStyle } from './style.ts';
 import { setDebug } from './debug.ts';
@@ -34,7 +35,18 @@ export function renderApplyTail(status: string, versionId?: string): string {
 //   Plan: 0 to create, 6 to update, 0 to destroy.
 const ACTION_SIGN: Record<string, string> = { create: '+', update: '~', delete: '-' };
 const ACTION_STATUS: Record<string, string> = { create: 'new', update: 'changed', delete: 'removed' };
-function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[] }): void {
+// Archived workflows whose file differs are skipped (the API rejects updates to
+// an archived workflow). Say so, so a missing update never looks like a silent no-op.
+export function renderPlanIgnored(ignored: { kind: string; localId: string; name: string }[]): string {
+  if (!ignored?.length) return '';
+  const one = ignored.length === 1;
+  const lines = [notice(`\n! ${ignored.length} archived ${one ? 'workflow is' : 'workflows are'} skipped — n8n rejects updates to archived workflows:`)];
+  for (const i of ignored) lines.push(dim(`    ${KIND_TO_SINGULAR[i.kind] ?? i.kind}  ${i.name}`));
+  lines.push(dim(`  unarchive ${one ? 'it' : 'them'} in n8n to let the change apply.`));
+  return lines.join('\n');
+}
+
+function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[]; ignored?: any[] }): void {
   for (const r of state.resources) {
     if (r.action === 'noop') continue;
     const type = KIND_TO_SINGULAR[r.kind] ?? r.kind;
@@ -52,6 +64,8 @@ function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any
     for (const o of orphans) console.log(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}`));
     console.log(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
   }
+  const ignoredOut = renderPlanIgnored(state.ignored ?? []);
+  if (ignoredOut) console.log(ignoredOut);
 }
 
 // Print an apply result: one line per applied item (and per failure), then a
@@ -261,8 +275,27 @@ export function buildProgram(): Command {
       const { ctx, store, root } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
         const { computePlan, writeState } = await import('./engine/state.ts');
-        const state = await computePlan(store, root, ctx, { destroy: !!opts.destroy, version: pkgVersion() });
+        // Transient only — never written to State/disk (Fix 1: the message can carry
+        // the raw n8n response body). Printing it here is the one sanctioned use.
+        let listError: string | undefined;
+        const state = await computePlan(store, root, ctx, {
+          destroy: !!opts.destroy, version: pkgVersion(),
+          onCredentialsListError: (message) => { listError = message; },
+        });
         printPlanSummary(state);
+        if (!state.serverListed && ctx.n8n) {
+          if (listError) {
+            console.log(danger('! could not list credentials on n8n — this plan compared files against the local DB only'));
+            console.log(dim('  an expired API key or missing permission will do this; credential drift on n8n is NOT reflected above'));
+            console.log(dim(`  n8n said: ${listError}`));
+          } else {
+            // Listing succeeded (so the diff above IS accurate) but the follow-up
+            // baseline snapshot failed — a different, narrower degradation. Saying
+            // so as "credential drift is NOT reflected" here would be false.
+            console.log(danger('! no server baseline recorded for this plan — `apply` will refuse it'));
+            console.log(dim('  the diff above is accurate; only the snapshot apply verifies against failed. re-run `n8c plan` to record one'));
+          }
+        }
         console.log(`state written → ${writeState(process.cwd(), ctx.env, state)}`);
       } finally { await store.close(); }
     });
@@ -273,6 +306,7 @@ export function buildProgram(): Command {
     .option('--force', 'compute a fresh plan and apply it in one step (no saved plan needed, like `terraform apply`)')
     .option('--destroy', 'with --force: include workflow deletes (archive) for server-only workflows')
     .option('-m, --message <msg>', 'note recorded on the release (shown in `n8c list`)')
+    .option('--no-verify', 're-check nothing on n8n before applying (not recommended)')
     .action(async (opts) => {
       const { ctx, store, root } = await buildContext(process.cwd(), 'workflows', envOf());
       try {
@@ -286,8 +320,48 @@ export function buildProgram(): Command {
           state = readState(process.cwd(), ctx.env);
           if (await desiredBundleChecksum(root, ctx) !== state.desiredChecksum) throw new Error('files changed since plan; re-run `n8c plan` (or `n8c apply --force`)');
         }
+
+        // Guard against a stale plan: the files are checked via desiredChecksum, but the
+        // INSTANCE can move too (someone edits a workflow in the n8n UI, deletes a
+        // credential). Re-read and compare only what this apply will write. --force
+        // already computed a fresh baseline above, in the same breath, so it skips this.
+        if (opts.verify !== false && ctx.n8n && !opts.force) {
+          // Fail-safe, never fail-open: if we cannot verify, do not pretend we did.
+          // verifyBeforeApply guards BOTH the fresh-facts read and the definitions
+          // read, so a store failure on either surfaces as 'stop' here, not a crash.
+          const outcome = await verifyBeforeApply(ctx, state);
+          if (outcome.decision === 'stop') {
+            console.error(danger(`! cannot verify n8n state: ${outcome.error}`));
+            console.error(dim('  re-run with --no-verify to apply without checking'));
+            process.exitCode = 1; return;
+          }
+          if (outcome.decision === 'block') {
+            console.error(danger(`! n8n changed since this plan was made (${outcome.drift.length}) — applying would overwrite it`));
+            for (const d of outcome.drift) {
+              const what = d.change === 'disappeared' ? 'no longer exists on n8n' : 'was modified on n8n';
+              const singular = d.kind.endsWith('s') ? d.kind.slice(0, -1) : d.kind;
+              console.error(`    ${singular} ${d.name} (${d.id}) ${what}`);
+            }
+            console.error(dim('  run `n8c plan` again to see the current diff, or --no-verify to apply anyway'));
+            process.exitCode = 1; return;
+          }
+          if (outcome.notice) {
+            console.log(notice('! this plan predates state verification — applying without a drift check'));
+          }
+        }
+
         writeState(process.cwd(), ctx.env, state);
         const done = await applyFromState(store, root, ctx, state, { message: opts.message });
+        // Refresh the baseline to "now" before persisting — otherwise a retry after a
+        // partial failure would compare against pre-apply facts and see this apply's
+        // OWN successful writes as drift (fail open on a false positive it caused).
+        // If the refresh itself fails, serverListed must fall to false alongside it
+        // (Fix 1) — otherwise the NEXT apply sees "no facts, but listed=true" and
+        // fails open on the very state this refresh was meant to protect.
+        const facts = await refreshedServerFacts(ctx);
+        done.serverFacts = facts;
+        done.serverListed = facts !== undefined && done.serverListed;
+        if (facts === undefined) console.log(notice('! could not refresh the post-apply baseline — the next apply will ask for a fresh `n8c plan`'));
         writeState(process.cwd(), ctx.env, done);
         printApplied(done);
         if (done.applied!.failed.length) process.exitCode = 1;
@@ -478,6 +552,11 @@ export function buildProgram(): Command {
         printPlanSummary(state);
         writeState(process.cwd(), ctx.env, state);
         const done = await applyFromState(store, root, ctx, state, { message: `restore ${ref}` });
+        // Same reasoning as `apply`: persist a post-apply baseline, not the pre-apply one.
+        const facts = await refreshedServerFacts(ctx);
+        done.serverFacts = facts;
+        done.serverListed = facts !== undefined && done.serverListed;
+        if (facts === undefined) console.log(notice('! could not refresh the post-apply baseline — the next apply will ask for a fresh `n8c plan`'));
         writeState(process.cwd(), ctx.env, done);
         printApplied(done);
       } finally { await store.close(); }

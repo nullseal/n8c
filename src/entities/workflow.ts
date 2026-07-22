@@ -107,7 +107,7 @@ export const workflow: EntityDescriptor = {
       if (w.nodeGroups) body.nodeGroups = w.nodeGroups;
       if (w.staticData) body.staticData = w.staticData;
       if (w.pinData) body.pinData = w.pinData;
-      return { localId, name: w.name, body, serverId: String(w.id) };
+      return { localId, name: w.name, body, serverId: String(w.id), archived: !!w.isArchived };
     });
   },
 };

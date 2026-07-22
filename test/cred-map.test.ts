@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { credIndex, resolveCredLocalId, isLocalId, normalizeMapping, mappingRows } from '../src/engine/cred-map.ts';
+import { credIndex, credIdMap, resolveCredLocalId, isLocalId, normalizeMapping, mappingRows } from '../src/engine/cred-map.ts';
 import { MemoryStore } from '../src/store/memory.ts';
 
 test('isLocalId accepts UUIDs, rejects raw n8n ids', () => {
@@ -79,4 +79,17 @@ test('putDefinitions keeps workflow mapping shape (localId → n8nId string)', a
   const store = new MemoryStore();
   await store.withTransaction((s) => store.putDefinitions('staging', 'workflows', { 'w-uuid': 'N8N_WF_1' }, s));
   assert.deepEqual(await store.getDefinitions('staging', 'workflows'), { 'w-uuid': 'N8N_WF_1' });
+});
+
+test('credIdMap: localId → n8n id, accepting both {id,name} and bare-string values', () => {
+  const mapping = {
+    '11111111-1111-4111-8111-111111111111': { id: 'S3vUeS2LmfOxLQEm', name: 'Qdrant Api-key' },
+    '22222222-2222-4222-8222-222222222222': 'xaY3BcbugejKug7T', // legacy bare-string form
+  };
+  assert.deepEqual(credIdMap(mapping), {
+    '11111111-1111-4111-8111-111111111111': 'S3vUeS2LmfOxLQEm',
+    '22222222-2222-4222-8222-222222222222': 'xaY3BcbugejKug7T',
+  });
+  assert.deepEqual(credIdMap({}), {}, 'empty mapping is empty, not a crash');
+  assert.deepEqual(credIdMap(undefined as any), {}, 'missing mapping is tolerated');
 });

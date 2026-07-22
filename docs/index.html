@@ -241,7 +241,7 @@
       <div class="card">
         <div class="ic">📐</div>
         <h3>Real plan / apply</h3>
-        <p><code>plan</code> diffs your files against live n8n and freezes the actions; <code>apply</code> pushes to n8n <em>before</em> recording success, so a failed deploy never leaves a false "deployed" state.</p>
+        <p><code>plan</code> diffs your files against live n8n and freezes the actions; <code>apply</code> pushes <em>before</em> recording success, and <b>refuses to run if n8n drifted since you planned</b> — a UI edit made in between is never silently overwritten.</p>
       </div>
       <div class="card">
         <div class="ic">⚡</div>
@@ -429,8 +429,8 @@ MONGO_DB=n8c</code></pre></div>
       <table class="cmds">
         <tr><td class="c">n8c init</td><td class="d">Scaffold config / .env / .gitignore and reconcile DB indexes.</td></tr>
         <tr><td class="c">n8c pull</td><td class="d">n8n + DB → files. <code>--no-export</code> = DB only.</td></tr>
-        <tr><td class="c">n8c plan</td><td class="d">Diff files vs live → write <code>.states/n8c.state.&lt;env&gt;.json</code>. <code>--destroy</code> includes deletes.</td></tr>
-        <tr><td class="c">n8c apply</td><td class="d">Execute the saved plan (push to n8n, then commit the DB). <code>--force</code> = plan + apply in one step.</td></tr>
+        <tr><td class="c">n8c plan</td><td class="d">Diff files vs live — including each node's credential binding — and record a server baseline for drift checks → <code>.states/n8c.state.&lt;env&gt;.json</code>. Archived workflows are skipped for update but stay deletable. <code>--destroy</code> includes deletes.</td></tr>
+        <tr><td class="c">n8c apply</td><td class="d">Execute the saved plan (push to n8n, then commit the DB). Re-checks n8n and stops if a workflow or credential it writes drifted since <code>plan</code>. <code>--force</code> = plan + apply in one step; <code>--no-verify</code> skips the drift check.</td></tr>
         <tr><td class="c">n8c list</td><td class="d">Generation versions (releases), newest first — id, kinds covered, message. <code>--full</code> untruncates.</td></tr>
         <tr><td class="c">n8c create</td><td class="d">Scaffold a <code>workflow</code> | <code>prompt</code> | <code>credential</code> | <code>node</code>.</td></tr>
         <tr><td class="c">n8c restore &lt;generation&gt;</td><td class="d">Roll <b>every kind</b> back to a generation version; <code>--apply</code> deploys it now.</td></tr>
@@ -444,6 +444,11 @@ MONGO_DB=n8c</code></pre></div>
     <div class="callout" style="border-left-color: var(--green)">
       <span class="ci">🔐</span>
       <p><b>Secrets, done right.</b> A credential's <code>apply.ts</code> reads its value from <code>process.env.MY_TOKEN</code>. The reference is what lives in files and the DB — never the resolved secret. At rest, credential data is encrypted with AES-256-GCM.</p>
+    </div>
+
+    <div class="callout" style="border-left-color: var(--blue)">
+      <span class="ci">🛡️</span>
+      <p><b>Stale-plan protection.</b> Between <code>plan</code> and <code>apply</code>, n8n can move — someone, or an AI, edits a workflow in the UI. <code>apply</code> re-reads the instance and <b>refuses</b> if anything it's about to write changed meanwhile, so a plan is never applied against a moved target. Only entities in the plan are checked; unrelated activity never blocks you.</p>
     </div>
   </div>
 </section>

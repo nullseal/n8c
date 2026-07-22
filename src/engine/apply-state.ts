@@ -40,8 +40,12 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
           // so delete by .id. DB-only kinds (prompts/prompt-content) touch no server.
           if (ctx.n8n && mapped !== undefined) {
             try {
-              if (kind === 'workflows') await ctx.n8n.archiveWorkflow(String(mapped));
-              else if (kind === 'credentials') await ctx.n8n.deleteCredential?.(String(mapped?.id ?? mapped));
+              if (kind === 'workflows') {
+                // A live workflow soft-deletes (archive, recoverable via unarchive).
+                // An already-archived one can't be archived again, so hard-delete it.
+                if (r.archived) await ctx.n8n.deleteWorkflow(String(mapped));
+                else await ctx.n8n.archiveWorkflow(String(mapped));
+              } else if (kind === 'credentials') await ctx.n8n.deleteCredential?.(String(mapped?.id ?? mapped));
             } catch (e: any) {
               // Already gone on n8n (deleted here earlier, or by hand) — deleting is
               // idempotent, so a 404 means the desired end state is already true.

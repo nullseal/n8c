@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import type { Store, Doc } from '../store/store.ts';
 import type { EntityContext } from '../entities/types.ts';
 import { checksum } from '../checksum.ts';
+import { readServerFacts, type ServerFacts } from './verify.ts';
 import { buildDocs } from './apply.ts';
 import { buildSources } from './build.ts';
 import { planAgainstServer } from './plan.ts';
@@ -15,6 +16,7 @@ export interface Resource {
   fromChecksum: string | null; toChecksum: string | null;
   nodes?: { name: string; status: string }[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
+  archived?: boolean;  // a delete of an already-archived workflow → hard delete, not archive
 }
 // An entity that still exists in the DB / on n8n but has no file — planned as a
 // delete only with --destroy, otherwise reported so `plan` never hides it.
@@ -22,9 +24,26 @@ export interface Orphan { kind: string; localId: string; name: string; }
 export interface State {
   env: string; n8cVersion: string; createdAt: string;
   desiredChecksum: string;
+  // The instance as `plan` saw it — apply re-reads and refuses if something it is
+  // about to write has drifted. Optional: state files written before this existed
+  // simply skip the check.
+  serverFacts?: ServerFacts;
+  // false when the credential listing failed (expired key, missing permission).
+  // The plan is then file-vs-live only, and apply must say so rather than imply
+  // it verified against n8n. The failure's message is NOT stored here — it can
+  // carry the raw n8n response body — it is surfaced to the operator only as a
+  // transient value inside the `plan` CLI handler (see computePlan's opts).
+  // Optional because every state file readState() parses from before this field
+  // existed has no such key at all — that absence is what tells verifyBeforeApply
+  // "this plan predates verification" instead of "verification failed" (Fix 2).
+  serverListed?: boolean;
   summary: { create: number; update: number; noop: number; delete: number };
   resources: Resource[];
   orphans?: Orphan[];
+  // Archived workflows that still have a file whose body differs: the n8n API
+  // rejects updates to an archived workflow, so the change is skipped and reported
+  // here rather than planned as a push that would fail.
+  ignored?: Orphan[];
   applied: { at: string; ok: string[]; failed: { localId: string; error: string }[] } | null;
 }
 
@@ -74,9 +93,40 @@ function statusToAction(status: string): Action {
 // Compute the plan: desired (files) vs live. Workflows AND credentials diff
 // against the LIVE n8n server; prompts diff against the DB live docs (not
 // server-backed).
-export async function computePlan(store: Store, root: string, ctx: EntityContext, opts: { destroy?: boolean; version: string } ): Promise<State> {
+export async function computePlan(store: Store, root: string, ctx: EntityContext, opts: { destroy?: boolean; version: string; onCredentialsListError?: (message: string) => void } ): Promise<State> {
   const problems = await validateAll(root, ctx, store);
   if (problems.length) throw new Error(`validation failed (${problems.length}):\n` + problems.map((p) => '  • ' + p).join('\n'));
+
+  // Baseline capture happens FIRST, right after validation and before any other
+  // server read (Fix 1). An n8n UI edit landing after this point is then detected
+  // as drift at apply time; capturing it AFTER the reads it's meant to protect
+  // (the old order) would silently bake a mid-plan edit into the "before" picture.
+  //
+  // The credential list is fetched here once and reused below by the credentials
+  // diff, instead of listing twice. Whether the call succeeded is also decided
+  // here (`listed`), so the diff and the baseline agree on it.
+  let listed = false;
+  let credentialsListFailed = false;
+  let rawCredentials: any[] = [];
+  if (ctx.n8n && (ctx.n8n as any).listCredentials) {
+    try { rawCredentials = await ctx.n8n.listCredentials(); listed = true; }
+    catch (e: any) {
+      credentialsListFailed = true;
+      // Never silently degraded: the message goes straight to the CLI handler's
+      // transient local via callback, never into the returned State (it can carry
+      // the raw, unbounded n8n response body).
+      opts.onCredentialsListError?.(String(e?.message ?? e));
+    }
+  }
+  // A failed listing must not read as an empty baseline (that would look like every
+  // credential/workflow vanished and block a legitimate apply on drift) — leave
+  // serverFacts unset instead, which already means "skip the drift check". Skip
+  // straight to undefined rather than re-attempting a listCredentials call we
+  // already know just failed.
+  let serverFacts: ServerFacts | undefined;
+  if (!credentialsListFailed) {
+    try { serverFacts = await readServerFacts(ctx, { credentials: rawCredentials }); } catch { /* no baseline recorded this run */ }
+  }
 
   const codeByNode = (await buildSources(dirname(root))).codeByNode;
   const resources: Resource[] = [];
@@ -89,6 +139,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   // shared); without it they're collected as `orphans` so the plan can still say
   // they exist instead of silently ignoring them.
   const orphans: Orphan[] = [];
+  const ignored: Orphan[] = [];
 
   for (const dbKind of activeKinds(ctx).filter((k) => k === 'prompts' || k === 'promptContents')) {
     const desired = await buildDocs(entityByKind[dbKind], root, ctx);
@@ -114,14 +165,13 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   //   else → noop; unmapped → create.
   // If we can't list (key isn't owner/admin, or the call fails) fall back to
   // file-vs-live only so a failed list never triggers a mass-recreate.
+  // (`listed` + `rawCredentials` were already fetched above, alongside the
+  // baseline capture, so this block reuses them instead of listing again.)
   {
     const credDefs = await ctx.getDefinitions('credentials');
     const liveById = new Map((await store.getLive('credentials')).map((d) => [d.localId, d]));
     const serverById = new Map<string, any>();
-    let listed = false;
-    if (ctx.n8n && (ctx.n8n as any).listCredentials) {
-      try { for (const c of await ctx.n8n.listCredentials()) serverById.set(String(c.id), c); listed = true; } catch { /* no list permission */ }
-    }
+    for (const c of rawCredentials) serverById.set(String(c.id), c);
     const desired = await buildDocs(entityByKind['credentials'], root, ctx);
     for (const d of desired) {
       const body = d.body as any;
@@ -162,13 +212,27 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   // workflows: diff desired files vs the live n8n server
   const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx);
   for (const r of rows) {
+    if (r.status === 'removed') {
+      // File deleted locally. On a shared instance never delete implicitly — report
+      // as an orphan unless --destroy. An archived workflow hard-deletes (archiving
+      // an already-archived one is meaningless); a live one archives (see apply).
+      if (!opts.destroy) { orphans.push({ kind: 'workflows', localId: r.localId, name: r.name }); continue; }
+      resources.push({ kind: 'workflows', localId: r.localId, name: r.name, action: 'delete', fromChecksum: r.checksum || null, toChecksum: null, archived: r.archived });
+      continue;
+    }
+    if (r.archived) {
+      // Present on the server but archived — the API rejects updates, so never plan a
+      // push. Surface it only when the file actually differs, so the operator knows
+      // the change is waiting on an unarchive rather than silently not applying.
+      if (r.status === 'changed') ignored.push({ kind: 'workflows', localId: r.localId, name: r.name });
+      resources.push({ kind: 'workflows', localId: r.localId, name: r.name, action: 'noop', fromChecksum: r.checksum || null, toChecksum: r.checksum || null });
+      continue;
+    }
     const action = statusToAction(r.status);
-    // never delete implicitly on a shared instance — report it as an orphan instead
-    if (action === 'delete' && !opts.destroy) { orphans.push({ kind: 'workflows', localId: r.localId, name: r.name }); continue; }
     resources.push({
       kind: 'workflows', localId: r.localId, name: r.name, action,
       fromChecksum: action === 'create' ? null : (r.checksum || null),
-      toChecksum: action === 'delete' ? null : (r.checksum || null),
+      toChecksum: r.checksum || null,
       nodes: (r.nodes ?? []).filter((n: any) => n.status !== 'identical').map((n: any) => ({ name: n.name, status: n.status })),
       setActive: r.setActive,
     });
@@ -179,7 +243,13 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   return {
     env: ctx.env, n8cVersion: opts.version, createdAt: new Date().toISOString(),
     desiredChecksum: await desiredBundleChecksum(root, ctx),
-    summary, resources, orphans, applied: null,
+    serverFacts,
+    // serverListed means "a baseline was recorded", not just "the listing call
+    // succeeded" — the two can diverge if the baseline read itself throws right
+    // below (credentialsListFailed false, but readServerFacts's catch still fires),
+    // which would otherwise leave a false "verified" flag on an unverified plan.
+    serverListed: listed && serverFacts !== undefined,
+    summary, resources, orphans, ignored, applied: null,
   };
 }
 

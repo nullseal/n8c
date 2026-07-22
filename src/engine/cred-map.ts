@@ -27,6 +27,18 @@ export function credIndex(mapping: CredMapping): Map<string, string> {
   return idx;
 }
 
+// Forward index localId → n8nId (the inverse of credIndex). Same `v?.id ?? v`
+// rule, so both the {id,name} and legacy bare-string mapping shapes resolve here
+// rather than at each call site.
+export function credIdMap(mapping: CredMapping): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [localId, v] of Object.entries(mapping ?? {})) {
+    const n8nId = v?.id ?? v;
+    if (n8nId !== undefined && n8nId !== null) out[localId] = String(n8nId);
+  }
+  return out;
+}
+
 // Resolve the stable localId for an n8n credential id: reuse the known one, else
 // mint a UUID exactly once. Mutates both `mapping` and `idx` so repeated calls in
 // a batch stay consistent.

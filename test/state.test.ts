@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { computePlan, desiredBundleChecksum, writeState, readState, statePath, type State } from '../src/engine/state.ts';
 import { applyFromState } from '../src/engine/apply-state.ts';
+import { verifyBeforeApply } from '../src/engine/verify.ts';
 import { checksum } from '../src/checksum.ts';
 
 function scaffold(): { root: string; nroot: string } {
@@ -387,6 +388,38 @@ test('applyFromState: workflow delete ARCHIVES (soft), not hard-delete', async (
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('applyFromState: an archived workflow delete hard-deletes; a live one still archives', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    await store.withTransaction((s) => store.putDefinitions('default', 'workflows', { wArch: 'N_ARCH', wLive: 'N_LIVE' }, s));
+    await store.withTransaction((s) => store.putLive('workflows', [
+      { localId: 'wArch', name: 'A', body: {}, checksum: 'x' },
+      { localId: 'wLive', name: 'L', body: {}, checksum: 'y' },
+    ], s));
+    const calls: string[] = [];
+    const n8n = {
+      listWorkflows: async () => [],
+      archiveWorkflow: async (id: string) => { calls.push(`archive:${id}`); },
+      deleteWorkflow: async (id: string) => { calls.push(`delete:${id}`); },
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state: State = {
+      env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '',
+      summary: { create: 0, update: 0, noop: 0, delete: 2 },
+      resources: [
+        { kind: 'workflows', localId: 'wArch', name: 'A', action: 'delete', fromChecksum: 'x', toChecksum: null, archived: true },
+        { kind: 'workflows', localId: 'wLive', name: 'L', action: 'delete', fromChecksum: 'y', toChecksum: null },
+      ],
+      applied: null,
+    };
+    await applyFromState(store, nroot, ctx, state);
+    assert.ok(calls.includes('delete:N_ARCH'), 'archived → DELETE /workflows/{id}');
+    assert.ok(calls.includes('archive:N_LIVE'), 'live → archive (soft)');
+    assert.equal(calls.includes('archive:N_ARCH'), false, 'archived is never archived-again');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('applyFromState: credential update PATCHes in place (no duplicate)', async () => {
   const { root, nroot } = scaffold();
   try {
@@ -406,6 +439,233 @@ test('applyFromState: credential update PATCHes in place (no duplicate)', async 
     assert.equal(calls.create, 0, 'no duplicate create');
     assert.equal((await store.getDefinitions('default', 'credentials') as any).c1.updatedAt, 'T2', 'new updatedAt stored');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- server baseline recording (Task 4) ---
+// Wires MemoryStore + a temp root + the given n8n stub into computePlan, mirroring
+// the setup the other computePlan tests in this file use (ctxOf/credCtx).
+async function computePlanForTest(n8n: any): Promise<State> {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    return await computePlan(store, nroot, ctx, { destroy: false, version: '0.0.0' });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+test('computePlan records the server baseline so apply can detect drift', async () => {
+  const state = await computePlanForTest({
+    listWorkflows: async () => [{ id: 'W1', name: 'Main', nodes: [], connections: {}, updatedAt: 'T1' }],
+    listCredentials: async () => [{ id: 'C1', name: 'Mongo', type: 'mongoDb', updatedAt: 'T1' }],
+  });
+  assert.equal(state.serverListed, true);
+  assert.equal(state.serverFacts?.workflows.W1?.includes('T1'), true);
+  assert.equal(state.serverFacts?.credentials.C1?.includes('Mongo'), true);
+});
+
+// Fix 1: the baseline must be captured BEFORE any other server read, so a UI edit
+// landing mid-plan can never be baked into the "before" picture as if it were
+// original. Also closes the double-listing: listCredentials must be called once,
+// not once for the baseline and again for the credentials diff.
+test('Fix 1: baseline capture happens before planAgainstServer\'s own server read, and listCredentials is called only once', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    const calls: string[] = [];
+    let workflowListCalls = 0;
+    const n8n = {
+      listWorkflows: async () => {
+        calls.push('listWorkflows');
+        workflowListCalls++;
+        // The property the fix exists for, not just call order: the SECOND read
+        // (planAgainstServer's own) reports a different updatedAt than the first
+        // (the baseline capture). If the baseline were captured late — e.g. moved
+        // back to the end of computePlan — it would silently pick up this later
+        // value instead of the true "before" snapshot, and the assertion below
+        // on state.serverFacts would catch it even though the call order looks fine.
+        return [{ id: 'W1', name: 'Main', nodes: [], connections: {}, updatedAt: workflowListCalls === 1 ? 'T1-BASELINE' : 'T2-LATER' }];
+      },
+      listCredentials: async () => { calls.push('listCredentials'); return []; },
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state = await computePlan(store, nroot, ctx, { destroy: false, version: '0.0.0' });
+    // listCredentials: exactly once (baseline + credentials-diff reuse the same call).
+    // listWorkflows: once for the baseline (facts), once for planAgainstServer's full
+    // diff — and the baseline's call must come first.
+    assert.deepEqual(calls, ['listCredentials', 'listWorkflows', 'listWorkflows']);
+    assert.ok(state.serverFacts?.workflows.W1?.includes('T1-BASELINE'), 'the recorded baseline must be the FIRST read');
+    assert.equal(state.serverFacts?.workflows.W1?.includes('T2-LATER'), false, 'not the later value planAgainstServer saw');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Fix 1, path 1: the credential listing can succeed while the baseline read
+// itself throws (computePlan's own catch around readServerFacts). serverFacts
+// ends up undefined but `listed` stays true — serverListed must still read
+// false, or apply would treat this as "verified" and fail open.
+test('Fix 1: baseline read throwing (credential listing still succeeds) yields serverListed=false, and verifyBeforeApply stops', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    let workflowCalls = 0;
+    const n8n = {
+      // First call is the baseline capture inside computePlan — throws, so the
+      // catch there leaves serverFacts undefined. Second call is
+      // planAgainstServer's own read and must succeed, or computePlan crashes
+      // instead of returning a degraded state to assert on.
+      listWorkflows: async () => { workflowCalls++; if (workflowCalls === 1) throw new Error('transient 500'); return []; },
+      listCredentials: async () => [{ id: 'C1', name: 'Mongo', type: 'mongoDb', updatedAt: 'T1' }],
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state = await computePlan(store, nroot, ctx, { destroy: false, version: '0.0.0' });
+    assert.equal(state.serverFacts, undefined, 'baseline read threw — no facts recorded');
+    assert.equal(state.serverListed, false, 'listing succeeded but the baseline did not — the flag tracks the baseline, not just the listing call');
+
+    const applyCtx = { ...ctx, n8n: { listWorkflows: async () => [], listCredentials: async () => [] } };
+    const outcome = await verifyBeforeApply(applyCtx, state);
+    assert.equal(outcome.decision, 'stop', 'a plan with no recorded baseline must never apply unverified');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a failed credential listing is recorded, not silently ignored', async () => {
+  const state = await computePlanForTest({
+    listWorkflows: async () => [],
+    listCredentials: async () => { throw new Error('401 Unauthorized'); },
+  });
+  assert.equal(state.serverListed, false, 'plan degraded to file-vs-live and says so');
+});
+
+// The CLI's plan handler prints one of two different messages when
+// `serverListed` is false, chosen by whether `onCredentialsListError` fired.
+// `serverListed === false` is not one condition — it covers both a failed
+// credential listing (diff IS degraded) and a failed baseline snapshot after
+// a successful listing (diff is NOT degraded). Assert the callback itself
+// distinguishes them, since that's what cli.ts branches on.
+test('serverListed=false from a failed credential listing sets the transient listError signal', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    const ctx = { env: 'default', encrypted: false, n8n: { listWorkflows: async () => [], listCredentials: async () => { throw new Error('401 Unauthorized'); } }, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    let listError: string | undefined;
+    const state = await computePlan(store, nroot, ctx, { destroy: false, version: '0', onCredentialsListError: (message) => { listError = message; } });
+    assert.equal(state.serverListed, false);
+    assert.equal(listError, '401 Unauthorized', 'listing failure surfaces its own error');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('serverListed=false from a failed baseline snapshot (listing succeeded) leaves listError unset', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    let workflowCalls = 0;
+    const n8n = {
+      // First call is the baseline capture — throws, so serverFacts ends up
+      // undefined. Second call is planAgainstServer's own read and must
+      // succeed, or computePlan crashes before returning a state to assert on.
+      listWorkflows: async () => { workflowCalls++; if (workflowCalls === 1) throw new Error('transient 500'); return []; },
+      listCredentials: async () => [{ id: 'C1', name: 'Mongo', type: 'mongoDb', updatedAt: 'T1' }],
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    let listError: string | undefined;
+    const state = await computePlan(store, nroot, ctx, { destroy: false, version: '0', onCredentialsListError: (message) => { listError = message; } });
+    assert.equal(state.serverListed, false, 'same flag value as a failed listing');
+    assert.equal(listError, undefined, 'but the listing itself never failed — the CLI must tell these two apart');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- Fix 2: a failed listing must yield an undefined baseline, not an empty one ---
+// (listWorkflows is also used by the workflows-diff step earlier in computePlan,
+// so only listCredentials can fail here without the plan aborting before it ever
+// reaches readServerFacts — that earlier crash is pre-existing and out of scope.)
+test('computePlan still returns a state, with serverFacts left undefined, when the n8n client throws', async () => {
+  const state = await computePlanForTest({
+    listWorkflows: async () => [],
+    listCredentials: async () => { throw new Error('500 boom'); },
+  });
+  assert.ok(state, 'computePlan does not crash on a listing failure');
+  assert.equal(state.serverFacts, undefined, 'no baseline recorded — NOT an empty one (that would read as "everything vanished")');
+});
+
+// --- Fix 1 regression guard: the raw n8n error body must never reach disk ---
+test('serialized state never contains a serverListError key', async () => {
+  const state = await computePlanForTest({
+    listWorkflows: async () => [],
+    listCredentials: async () => { throw new Error('401 Unauthorized: token=super-secret-value'); },
+  });
+  assert.equal((state as any).serverListError, undefined, 'not on the State object either');
+  const serialized = JSON.stringify(state, null, 2) + '\n'; // mirrors writeState's own serialization
+  assert.ok(!serialized.includes('serverListError'), 'not in the on-disk JSON');
+});
+
+// --- archived workflows (Task 2): n8n rejects updates to an archived workflow ---
+async function computePlanForArchivedTest(opts: { server: any[]; file: { localId: string; name: string; node: any } | null; destroy: boolean }) {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { MemoryStore } = await import('../src/store/memory.ts');
+  const { computePlan } = await import('../src/engine/state.ts');
+  const root = mkdtempSync(join(tmpdir(), 'n8c-archp-'));
+  try {
+    if (opts.file) {
+      const dir = join(root, 'workflows', opts.file.localId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: opts.file.name }) + '\n');
+      const n = JSON.stringify(opts.file.node);
+      writeFileSync(join(dir, 'apply.ts'),
+        `export default () => ({ name: ${JSON.stringify(opts.file.name)}, nodes: [${n}], connections: {}, settings: {}, meta: { n8cLocalId: ${JSON.stringify(opts.file.localId)} } });\n`);
+    }
+    const ctx = {
+      env: 'default', encrypted: false,
+      n8n: { listWorkflows: async () => opts.server, listCredentials: async () => [] },
+      getDefinitions: async () => ({}),
+    } as any;
+    return await computePlan(new MemoryStore(), root, ctx, { destroy: opts.destroy, version: '0' });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+// A workflow archived on n8n that still has a matching local file whose body differs
+// must NOT be planned as an update (the API rejects it) — it is a noop, and is
+// surfaced in `ignored` so the operator knows the change is waiting on an unarchive.
+test('archived workflow with a differing file → noop + reported in ignored', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W1', name: 'Old', nodes: [{ name: 'a', type: 't', parameters: { v: 1 } }], connections: {}, settings: {}, isArchived: true, meta: { n8cLocalId: 'wf1' } }],
+    file: { localId: 'wf1', name: 'Old', node: { name: 'a', type: 't', parameters: { v: 2 } } }, // v differs
+    destroy: false,
+  });
+  const r = state.resources.find((x) => x.localId === 'wf1');
+  assert.equal(r.action, 'noop', 'archived workflow is never updated');
+  assert.ok((state.ignored ?? []).some((i) => i.localId === 'wf1'), 'reported as skipped');
+});
+
+// Archived, file gone, --destroy → a delete flagged archived (apply hard-deletes it).
+test('archived workflow with no file + --destroy → delete flagged archived', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W1', name: 'Old', nodes: [], connections: {}, settings: {}, isArchived: true, meta: { n8cLocalId: 'wf1' } }],
+    file: null, destroy: true,
+  });
+  const r = state.resources.find((x) => x.localId === 'wf1');
+  assert.equal(r.action, 'delete');
+  assert.equal(r.archived, true, 'delete carries the archived flag for a hard delete');
+});
+
+// Archived, file gone, no --destroy → orphan (unchanged safety gate).
+test('archived workflow with no file, no --destroy → orphan', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W1', name: 'Old', nodes: [], connections: {}, settings: {}, isArchived: true, meta: { n8cLocalId: 'wf1' } }],
+    file: null, destroy: false,
+  });
+  assert.ok((state.orphans ?? []).some((o) => o.localId === 'wf1'));
+  assert.equal(state.resources.some((x) => x.localId === 'wf1'), false);
+});
+
+// Control: a LIVE workflow with a differing file is still an update (behaviour preserved).
+test('non-archived workflow with a differing file → update (unchanged)', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W1', name: 'Live', nodes: [{ name: 'a', type: 't', parameters: { v: 1 } }], connections: {}, settings: {}, isArchived: false, meta: { n8cLocalId: 'wf1' } }],
+    file: { localId: 'wf1', name: 'Live', node: { name: 'a', type: 't', parameters: { v: 2 } } },
+    destroy: false,
+  });
+  assert.equal(state.resources.find((x) => x.localId === 'wf1').action, 'update');
+  assert.equal((state.ignored ?? []).length, 0);
 });
 
 test('applyFromState does NOT commit the live doc when the n8n push throws', async () => {

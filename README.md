@@ -174,11 +174,9 @@ Override the prefix or any single name in `n8c.config.json`:
 
 ### Plan / apply
 
-`plan` computes actions against the **live** state (workflows and credentials diffed against the n8n
-server, prompts against the DB), freezes them into `.states/n8c.state.<env>.json`, and `apply`
-executes exactly that plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan
-(files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one
-step, Terraform-style.
+`plan` computes actions against the **live** state (workflows and credentials diffed against the n8n server, prompts against the DB), freezes them into `.states/n8c.state.<env>.json` — including which credential each workflow node is bound to. If the credential listing fails (an expired API key, or a key without permission), `plan` says so explicitly and falls back to comparing against the local database only.
+
+`apply` executes the frozen plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan (files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one step, Terraform-style.
 
 - **Workflow `active` state is managed** — pulled, diffed, and reached via n8n's
   `activate` / `deactivate` endpoints.
@@ -186,6 +184,32 @@ step, Terraform-style.
   no duplicates; missing-on-server is recreated.
 - **`plan --destroy`** marks workflows that exist on the server but not in your files; `apply`
   **archives** them (soft, recoverable) rather than hard-deleting.
+
+### Archived workflows
+
+`plan` never updates a workflow that is archived on n8n — the API rejects it. If an
+archived workflow still has a local file whose content differs, `plan` skips it and
+prints a line naming it; unarchive it in n8n to let the change apply. An archived
+workflow whose local file you deleted is still removable: `plan --destroy` plans a
+hard delete for it (a live workflow is archived instead, which is recoverable).
+
+### Stale-plan protection
+
+`apply` verifies twice before it writes anything:
+
+1. **Files** — the plan is rejected if any entity file changed since `plan` ran.
+2. **Instance** — n8n is re-read, and `apply` stops if a workflow or credential
+   *this plan writes* was modified or deleted on n8n in the meantime.
+
+Only entities in the plan are checked, so unrelated activity on a shared instance
+never blocks you. Use `--no-verify` to skip step 2; `--force` (plan + apply in one
+step) is always fresh and skips it automatically.
+
+Drift detection is a best-effort safety net: it relies on n8n's `updatedAt` timestamp
+changing when an entity is edited. If a change does not bump that timestamp, it will
+go undetected — strictly better than no checking, but not a guarantee of safety.
+
+If n8n cannot be reached, `apply` stops rather than applying unverified.
 
 ### Pull & versioning
 
@@ -314,7 +338,7 @@ workflows, build-time prompts, credentials, versioning, `plan`/`apply` — works
 n8c init [--project-only | --db-only]   Scaffold config/.env/.gitignore + reconcile DB indexes
 n8c pull [--no-export] [-y]             n8n + DB → files (asks before overwriting; -y/--yes skips)
 n8c plan [--destroy]                    Diff files vs live → write .states/n8c.state.<env>.json
-n8c apply [--force] [--destroy] [-m]    Execute the saved plan (-m/--message notes the release)
+n8c apply [--force] [--destroy] [--no-verify] [-m]    Execute the saved plan (-m/--message notes the release)
 n8c types                               Generate n8c/n8c.types.ts (editor types; also run by pull)
 n8c list [--full]                       Generation versions (releases), newest first
 n8c create <workflow|prompt|credential|node> [--name --description --type --key --workflow]
