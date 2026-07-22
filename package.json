@@ -1,6 +1,6 @@
 {
   "name": "@nullseal/n8c",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Terraform-style, code-first CLI to version and deploy n8n workflows, prompts and credentials from a database.",
   "type": "module",
   "license": "MIT",
