@@ -211,6 +211,41 @@ go undetected — strictly better than no checking, but not a guarantee of safet
 
 If n8n cannot be reached, `apply` stops rather than applying unverified.
 
+#### Resolving drift
+
+When `apply` blocks because n8n changed since your plan, pick a side:
+
+- **Keep your files** (overwrite what changed on n8n): re-run `n8c plan`, review
+  the diff — it now shows the n8n-side edits being overwritten — then `n8c apply`.
+- **Keep n8n's version** (take the server's edits): `n8c pull` to import them into
+  your files, then re-apply your own change on top and `n8c plan` again.
+
+There is no force-my-side shortcut on purpose: the second `plan` is where you see
+what you'd be destroying. (`--no-verify` exists but skips that safety, not the work.)
+
+### Agents & MCP
+
+Two commands make a repo agent-native:
+
+`n8c agent` writes (or refreshes) a marker-delimited section in `AGENTS.md` telling
+any AI agent how to work this repo: the pull → edit → plan → apply loop, the entity
+layout, and the rules (no literal secrets, don't touch ids, re-plan on drift). Your
+own content outside the `<!-- n8c:start -->` / `<!-- n8c:end -->` markers is never
+touched — and if the marker pair itself is malformed (torn, doubled, or out of
+order), `n8c agent` refuses with a clear error rather than guessing where your
+content ends.
+
+`n8c mcp` starts an MCP (stdio) server exposing the loop as tools — `n8c_pull`,
+`n8c_plan`, `n8c_apply`, `n8c_list`, `n8c_restore` — for Claude Code, Cursor, or any
+MCP client. Register it as a stdio server with command `n8c` and args `["mcp"]`.
+Each tool call spawns the real CLI (with `--pipe`), so the drift gate and archived-
+workflow rules apply exactly as they do in a terminal, and calls are handled
+strictly in order. `drop` and the gate-bypass flags (`--force`, `--no-verify`) are
+deliberately not exposed — an agent that hits the drift gate should re-plan, not
+override it. One deletion path IS exposed, by design: `n8c_plan` accepts
+`destroy: true` (same as `--destroy` in a terminal), so a plan+apply over MCP can
+still delete server-only entities whose files were removed.
+
 ### Pull & versioning
 
 `pull` captures the current reality and leaves you with a clean baseline — running `plan` right
@@ -340,12 +375,14 @@ n8c pull [--no-export] [-y]             n8n + DB → files (asks before overwrit
 n8c plan [--destroy]                    Diff files vs live → write .states/n8c.state.<env>.json
 n8c apply [--force] [--destroy] [--no-verify] [-m]    Execute the saved plan (-m/--message notes the release)
 n8c types                               Generate n8c/n8c.types.ts (editor types; also run by pull)
+n8c agent                               Write/refresh the AGENTS.md section for AI agents
 n8c list [--full]                       Generation versions (releases), newest first
 n8c create <workflow|prompt|credential|node> [--name --description --type --key --workflow]
 n8c restore <generation> [--apply]      Roll every kind back to a generation version
 n8c drop <generation...>                Delete generation versions from history (all kinds)
 n8c db export [-o db.n8c-backup]        Dump all n8c collections (records + indexes) to a file   [MongoDB only]
 n8c db import [file]                    Recreate + re-import collections from a backup file       [MongoDB only]
+n8c mcp                                 Start an MCP (stdio) server exposing the loop as agent tools
 ```
 
 **MongoDB-only commands.** `db export` / `db import` work on the MongoDB backend only. On the SQLite

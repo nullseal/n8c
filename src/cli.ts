@@ -35,13 +35,21 @@ export function renderApplyTail(status: string, versionId?: string): string {
 //   Plan: 0 to create, 6 to update, 0 to destroy.
 const ACTION_SIGN: Record<string, string> = { create: '+', update: '~', delete: '-' };
 const ACTION_STATUS: Record<string, string> = { create: 'new', update: 'changed', delete: 'removed' };
+// The entity's stable handle, shown BEFORE the name so an entity is easy to find
+// (the folder on disk / DB key; for a workflow or credential the env-neutral localId).
+// Trailing gap included so it slots in front of the name; empty when it would just
+// repeat the name (e.g. a prompt keyed by its own name).
+export function renderResourceId(r: { localId?: string; name?: string }): string {
+  return r.localId && r.localId !== r.name ? `[${r.localId}]  ` : '';
+}
+
 // Archived workflows whose file differs are skipped (the API rejects updates to
 // an archived workflow). Say so, so a missing update never looks like a silent no-op.
 export function renderPlanIgnored(ignored: { kind: string; localId: string; name: string }[]): string {
   if (!ignored?.length) return '';
   const one = ignored.length === 1;
   const lines = [notice(`\n! ${ignored.length} archived ${one ? 'workflow is' : 'workflows are'} skipped — n8n rejects updates to archived workflows:`)];
-  for (const i of ignored) lines.push(dim(`    ${KIND_TO_SINGULAR[i.kind] ?? i.kind}  ${i.name}`));
+  for (const i of ignored) lines.push(dim(`    ${KIND_TO_SINGULAR[i.kind] ?? i.kind}  ${renderResourceId(i)}${i.name}`));
   lines.push(dim(`  unarchive ${one ? 'it' : 'them'} in n8n to let the change apply.`));
   return lines.join('\n');
 }
@@ -51,7 +59,7 @@ function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any
     if (r.action === 'noop') continue;
     const type = KIND_TO_SINGULAR[r.kind] ?? r.kind;
     const nodes = r.nodes?.length ? '  (' + r.nodes.map((n: any) => n.name).join(', ') + ')' : '';
-    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${r.name}${nodes}`);
+    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${renderResourceId(r)}${r.name}${nodes}`);
   }
   const s = state.summary;
   console.log(`Plan: ${s.create} to create, ${s.update} to update, ${s.delete} to destroy.`);
@@ -315,11 +323,11 @@ export function buildProgram(): Command {
         let state;
         if (opts.force) {
           state = await computePlan(store, root, ctx, { destroy: !!opts.destroy, version: pkgVersion() });
-          printPlanSummary(state);
         } else {
           state = readState(process.cwd(), ctx.env);
           if (await desiredBundleChecksum(root, ctx) !== state.desiredChecksum) throw new Error('files changed since plan; re-run `n8c plan` (or `n8c apply --force`)');
         }
+        printPlanSummary(state); // show what will be applied (with ids) — for a saved plan too, not only --force
 
         // Guard against a stale plan: the files are checked via desiredChecksum, but the
         // INSTANCE can move too (someone edits a workflow in the n8n UI, deletes a
@@ -478,6 +486,22 @@ export function buildProgram(): Command {
       finally { await store.close(); }
     });
 
+  // --- agent: write/refresh the n8c section in AGENTS.md ---
+  program.command('agent')
+    .description('write/refresh the n8c section in AGENTS.md so AI agents know how to work this repo')
+    .action(async () => {
+      const { renderAgentSection, upsertAgentsMd } = await import('./engine/agent-context.ts');
+      let database: string | undefined; let promptContents: boolean | undefined; let root: string | undefined;
+      try {
+        const cfg = JSON.parse(readFileSync(join(process.cwd(), 'n8c.config.json'), 'utf8'));
+        database = cfg.database; promptContents = cfg.database !== 'sqlite'; root = cfg.root;
+      } catch { /* no config yet — render the generic section */ }
+      const file = join(process.cwd(), 'AGENTS.md');
+      const existing = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+      writeFileSync(file, upsertAgentsMd(existing, renderAgentSection({ database, promptContents, root: root ?? 'n8c' })));
+      console.log(`AGENTS.md ${existing === undefined ? 'created' : 'updated'} — the n8c section is marker-delimited and safe to re-run`);
+    });
+
   // --- db: dump / restore the whole n8c DB (records + indexes) ---
   const db = program.command('db').description('back up / restore the n8c DB collections');
   db.action(() => db.help());
@@ -590,6 +614,16 @@ export function buildProgram(): Command {
         }
         console.log(dim(`${targets.length} generation(s) dropped`));
       } finally { await store.close(); }
+    });
+
+  // --- mcp: stdio server exposing pull/plan/apply/list/restore as agent tools ---
+  program.command('mcp')
+    .description('start an MCP (stdio) server exposing pull/plan/apply/list/restore as agent tools')
+    .action(async () => {
+      const { startMcpServer } = await import('./mcp/server.ts');
+      // argv[1] is this CLI entry (src/cli.ts in dev, dist/cli.js installed) —
+      // spawning it per tool call keeps MCP behaviour identical to the terminal.
+      startMcpServer({ version: pkgVersion(), cliPath: process.argv[1] });
     });
 
   // An unknown command → error + help, non-zero exit. (No-args help is handled

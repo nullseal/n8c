@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration, renderPlanIgnored } from '../src/cli.ts';
+import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration, renderPlanIgnored, renderResourceId } from '../src/cli.ts';
 import { setStyle } from '../src/style.ts';
 
 const perKind = () => [
@@ -189,5 +189,12 @@ test('renderPlanIgnored names archived workflows skipped for update, empty when 
   assert.equal(renderPlanIgnored([]), '', 'nothing to say when no archived skips');
   const out = renderPlanIgnored([{ kind: 'workflows', localId: 'w1', name: 'Old Flow' }]);
   assert.ok(out.includes('Old Flow'), 'names the skipped workflow');
+  assert.ok(out.includes('w1'), 'shows the id so the workflow is easy to find');
   assert.ok(out.toLowerCase().includes('archiv'), 'explains it is archived');
+});
+
+test('renderResourceId shows the localId, suppressed only when it just repeats the name', () => {
+  assert.equal(renderResourceId({ localId: 'a1b2c3d4', name: 'Old Flow' }), '[a1b2c3d4]  ', 'distinct id is shown, before the name');
+  assert.equal(renderResourceId({ localId: 'main_triage', name: 'main_triage' }), '', 'no redundant id when it equals the name');
+  assert.equal(renderResourceId({ name: 'Old Flow' }), '', 'nothing to show without a localId');
 });
