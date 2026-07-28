@@ -221,7 +221,7 @@
       <div class="card">
         <div class="ic">🤖</div>
         <h3>A safety net for AI</h3>
-        <p>Let an AI edit your automation freely. Every <code>apply</code> is a restorable release, so <code>n8c restore &lt;release&gt;</code> returns the whole instance — workflows, prompts and credentials together — to a point you know was good. Agents can drive the whole loop natively over MCP (<code>n8c mcp</code>), and <code>n8c agent</code> teaches them the rules via <code>AGENTS.md</code>.</p>
+        <p>Let an AI edit your automation freely. Every <code>apply</code> is a restorable release, so <code>n8c restore &lt;release&gt;</code> returns the whole instance — workflows, prompts and credentials together — to a point you know was good. Agents can drive the whole loop natively over MCP (<code>n8c mcp</code>), and <code>n8c init --agents</code> teaches them the rules via <code>AGENTS.md</code>.</p>
       </div>
       <div class="card">
         <div class="ic">🙈</div>
@@ -427,13 +427,12 @@ MONGO_DB=n8c</code></pre></div>
     <div class="table-wrap">
       <div class="table-scroll">
       <table class="cmds">
-        <tr><td class="c">n8c init</td><td class="d">Scaffold config / .env / .gitignore and reconcile DB indexes.</td></tr>
+        <tr><td class="c">n8c init [--agents]</td><td class="d">Scaffold config / .env / .gitignore and reconcile DB indexes; <code>--agents</code> also writes the AGENTS.md section for AI agents.</td></tr>
         <tr><td class="c">n8c pull</td><td class="d">n8n + DB → files. <code>--no-export</code> = DB only.</td></tr>
         <tr><td class="c">n8c plan</td><td class="d">Diff files vs live — including each node's credential binding — and record a server baseline for drift checks → <code>.states/n8c.state.&lt;env&gt;.json</code>. Archived workflows are skipped for update but stay deletable. <code>--destroy</code> includes deletes.</td></tr>
         <tr><td class="c">n8c apply</td><td class="d">Execute the saved plan (push to n8n, then commit the DB). Re-checks n8n and stops if a workflow or credential it writes drifted since <code>plan</code>. <code>--force</code> = plan + apply in one step; <code>--no-verify</code> skips the drift check.</td></tr>
         <tr><td class="c">n8c list</td><td class="d">Generation versions (releases), newest first — id, kinds covered, message. <code>--full</code> untruncates.</td></tr>
         <tr><td class="c">n8c create</td><td class="d">Scaffold a <code>workflow</code> | <code>prompt</code> | <code>credential</code> | <code>node</code>.</td></tr>
-        <tr><td class="c">n8c agent</td><td class="d">Write/refresh the AGENTS.md section for AI agents.</td></tr>
         <tr><td class="c">n8c restore &lt;generation&gt;</td><td class="d">Roll <b>every kind</b> back to a generation version; <code>--apply</code> deploys it now.</td></tr>
         <tr><td class="c">n8c drop &lt;generation…&gt;</td><td class="d">Delete generation versions from history (each drops across all kinds; the active one can't be dropped).</td></tr>
         <tr><td class="c">n8c db export</td><td class="d">Dump all n8c collections to a backup file (MongoDB only).</td></tr>

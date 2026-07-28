@@ -2,7 +2,7 @@ export const N8C_START = '<!-- n8c:start -->';
 export const N8C_END = '<!-- n8c:end -->';
 
 // The repo's standing instructions for AI agents. Static on purpose: the less it
-// derives from live state, the less it drifts. Regenerate with `n8c agent`.
+// derives from live state, the less it drifts. Regenerate with `n8c init --agents`.
 export function renderAgentSection(info: { database?: string; promptContents?: boolean; root?: string }): string {
   const pc = info.promptContents !== false;
   const root = info.root ?? 'n8c';
@@ -70,7 +70,7 @@ export function upsertAgentsMd(existing: string | undefined, section: string): s
   const endCount = existing.split(N8C_END).length - 1;
 
   if (startCount !== endCount || startCount > 1 || (start !== -1 && end !== -1 && end < start)) {
-    throw new Error(`AGENTS.md has a malformed n8c marker pair (${N8C_START} / ${N8C_END}) — fix or remove the markers, then re-run \`n8c agent\``);
+    throw new Error(`AGENTS.md has a malformed n8c marker pair (${N8C_START} / ${N8C_END}) — fix or remove the markers, then re-run \`n8c init --agents\``);
   }
 
   if (start !== -1 && end !== -1) {

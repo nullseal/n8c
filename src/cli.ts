@@ -247,11 +247,24 @@ export function buildProgram(): Command {
     .description('scaffold the project (config/.env/gitignore) and reconcile DB indexes')
     .option('--project-only', 'only scaffold files, skip the DB setup')
     .option('--db-only', 'only reconcile DB indexes / check replica set')
+    .option('--agents', 'also write/refresh the n8c section in AGENTS.md so AI agents know how to work this repo')
     .action(async (opts) => {
       const cwd = process.cwd();
       if (!opts.dbOnly) {
         const touched = initProject(cwd);
         console.log(touched.length ? 'project scaffold:\n  ' + touched.join('\n  ') : 'project already scaffolded');
+        if (opts.agents) {
+          const { renderAgentSection, upsertAgentsMd } = await import('./engine/agent-context.ts');
+          let database: string | undefined; let promptContents: boolean | undefined; let root: string | undefined;
+          try {
+            const cfg = JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'));
+            database = cfg.database; promptContents = cfg.database !== 'sqlite'; root = cfg.root;
+          } catch { /* no config yet — render the generic section */ }
+          const file = join(cwd, 'AGENTS.md');
+          const existing = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+          writeFileSync(file, upsertAgentsMd(existing, renderAgentSection({ database, promptContents, root: root ?? 'n8c' })));
+          console.log(`AGENTS.md ${existing === undefined ? 'created' : 'updated'} — the n8c section is marker-delimited and safe to re-run`);
+        }
       }
       if (!opts.projectOnly) {
         let config: any = {};
@@ -484,22 +497,6 @@ export function buildProgram(): Command {
       const { ctx, store, root } = await buildContext(process.cwd(), 'credentials', envOf());
       try { console.log(`types written → ${await writeTypesFile(store, ctx, root)}`); }
       finally { await store.close(); }
-    });
-
-  // --- agent: write/refresh the n8c section in AGENTS.md ---
-  program.command('agent')
-    .description('write/refresh the n8c section in AGENTS.md so AI agents know how to work this repo')
-    .action(async () => {
-      const { renderAgentSection, upsertAgentsMd } = await import('./engine/agent-context.ts');
-      let database: string | undefined; let promptContents: boolean | undefined; let root: string | undefined;
-      try {
-        const cfg = JSON.parse(readFileSync(join(process.cwd(), 'n8c.config.json'), 'utf8'));
-        database = cfg.database; promptContents = cfg.database !== 'sqlite'; root = cfg.root;
-      } catch { /* no config yet — render the generic section */ }
-      const file = join(process.cwd(), 'AGENTS.md');
-      const existing = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
-      writeFileSync(file, upsertAgentsMd(existing, renderAgentSection({ database, promptContents, root: root ?? 'n8c' })));
-      console.log(`AGENTS.md ${existing === undefined ? 'created' : 'updated'} — the n8c section is marker-delimited and safe to re-run`);
     });
 
   // --- db: dump / restore the whole n8c DB (records + indexes) ---

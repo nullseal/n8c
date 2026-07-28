@@ -227,12 +227,12 @@ what you'd be destroying. (`--no-verify` exists but skips that safety, not the w
 
 Two commands make a repo agent-native:
 
-`n8c agent` writes (or refreshes) a marker-delimited section in `AGENTS.md` telling
+`n8c init --agents` writes (or refreshes) a marker-delimited section in `AGENTS.md` telling
 any AI agent how to work this repo: the pull → edit → plan → apply loop, the entity
 layout, and the rules (no literal secrets, don't touch ids, re-plan on drift). Your
 own content outside the `<!-- n8c:start -->` / `<!-- n8c:end -->` markers is never
 touched — and if the marker pair itself is malformed (torn, doubled, or out of
-order), `n8c agent` refuses with a clear error rather than guessing where your
+order), `n8c init --agents` refuses with a clear error rather than guessing where your
 content ends.
 
 `n8c mcp` starts an MCP (stdio) server exposing the loop as tools — `n8c_pull`,
@@ -370,12 +370,11 @@ workflows, build-time prompts, credentials, versioning, `plan`/`apply` — works
 ## Commands
 
 ```
-n8c init [--project-only | --db-only]   Scaffold config/.env/.gitignore + reconcile DB indexes
+n8c init [--project-only | --db-only] [--agents]   Scaffold config/.env/.gitignore + reconcile DB indexes; --agents also writes AGENTS.md
 n8c pull [--no-export] [-y]             n8n + DB → files (asks before overwriting; -y/--yes skips)
 n8c plan [--destroy]                    Diff files vs live → write .states/n8c.state.<env>.json
 n8c apply [--force] [--destroy] [--no-verify] [-m]    Execute the saved plan (-m/--message notes the release)
 n8c types                               Generate n8c/n8c.types.ts (editor types; also run by pull)
-n8c agent                               Write/refresh the AGENTS.md section for AI agents
 n8c list [--full]                       Generation versions (releases), newest first
 n8c create <workflow|prompt|credential|node> [--name --description --type --key --workflow]
 n8c restore <generation> [--apply]      Roll every kind back to a generation version
