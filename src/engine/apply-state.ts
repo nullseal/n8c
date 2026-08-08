@@ -38,14 +38,24 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
           // workflows: ARCHIVE (soft, recoverable via unarchive) rather than
           // hard-delete on a shared instance. credentials: mapping holds {id,name},
           // so delete by .id. DB-only kinds (prompts/prompt-content) touch no server.
-          if (ctx.n8n && mapped !== undefined) {
+          //
+          // A workflow's id comes from this env's mapping when there is one, else from
+          // the id `plan` read off the server. Mapping-only was a silent no-op for the
+          // two cases that matter most: a workflow created in the n8n UI (never mapped),
+          // and one an earlier destroy already archived (which drops the mapping while
+          // n8n still lists it). Both were reported "applied" while n8n was never
+          // called, so the orphan returned on every subsequent plan.
+          const n8nId = kind === 'workflows'
+            ? (mapped !== undefined ? String(mapped) : r.serverId)
+            : kind === 'credentials' && mapped !== undefined ? String(mapped?.id ?? mapped) : undefined;
+          if (ctx.n8n && n8nId) {
             try {
               if (kind === 'workflows') {
                 // A live workflow soft-deletes (archive, recoverable via unarchive).
                 // An already-archived one can't be archived again, so hard-delete it.
-                if (r.archived) await ctx.n8n.deleteWorkflow(String(mapped));
-                else await ctx.n8n.archiveWorkflow(String(mapped));
-              } else if (kind === 'credentials') await ctx.n8n.deleteCredential?.(String(mapped?.id ?? mapped));
+                if (r.archived) await ctx.n8n.deleteWorkflow(n8nId);
+                else await ctx.n8n.archiveWorkflow(n8nId);
+              } else await ctx.n8n.deleteCredential?.(n8nId);
             } catch (e: any) {
               // Already gone on n8n (deleted here earlier, or by hand) — deleting is
               // idempotent, so a 404 means the desired end state is already true.

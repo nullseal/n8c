@@ -17,10 +17,18 @@ export interface Resource {
   nodes?: { name: string; status: string }[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
   archived?: boolean;  // a delete of an already-archived workflow → hard delete, not archive
+  // workflows only, deletes only: the n8n id read off the server at plan time. A
+  // workflow with no file may have no env mapping either (made in the n8n UI, or
+  // its mapping was dropped by an earlier destroy), and then `localId` is a UUID
+  // invented for this run — this is the only handle apply can delete by.
+  serverId?: string;
 }
 // An entity that still exists in the DB / on n8n but has no file — planned as a
 // delete only with --destroy, otherwise reported so `plan` never hides it.
-export interface Orphan { kind: string; localId: string; name: string; }
+// `archived` (workflows): already archived on n8n, so --destroy removes it for good
+// rather than archiving it — worth saying, since an archived workflow keeps coming
+// back from listWorkflows() and would otherwise look like a destroy that did nothing.
+export interface Orphan { kind: string; localId: string; name: string; archived?: boolean; }
 export interface State {
   env: string; n8cVersion: string; createdAt: string;
   desiredChecksum: string;
@@ -216,8 +224,8 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
       // File deleted locally. On a shared instance never delete implicitly — report
       // as an orphan unless --destroy. An archived workflow hard-deletes (archiving
       // an already-archived one is meaningless); a live one archives (see apply).
-      if (!opts.destroy) { orphans.push({ kind: 'workflows', localId: r.localId, name: r.name }); continue; }
-      resources.push({ kind: 'workflows', localId: r.localId, name: r.name, action: 'delete', fromChecksum: r.checksum || null, toChecksum: null, archived: r.archived });
+      if (!opts.destroy) { orphans.push({ kind: 'workflows', localId: r.localId, name: r.name, archived: r.archived }); continue; }
+      resources.push({ kind: 'workflows', localId: r.localId, name: r.name, action: 'delete', fromChecksum: r.checksum || null, toChecksum: null, archived: r.archived, serverId: r.serverId });
       continue;
     }
     if (r.archived) {

@@ -4,8 +4,13 @@ import type { Store } from '../store/store.ts';
 import { resolveCollections } from '../store/collections.ts';
 
 // The full default config, written explicitly by `init` so every knob is visible.
+// `sqlite` is the default backend: a single local file via Node's built-in
+// node:sqlite, so `init` works with zero services running. Switch `database` to
+// "mongodb" (and fill MONGO_URI/MONGO_DB) for a shared/team setup or the runtime
+// prompt-content feature; collectionPrefix/collections apply to that backend only.
 const DEFAULT_CONFIG = {
-  database: 'mongodb',
+  database: 'sqlite',
+  sqlite: { file: 'n8c.sqlite' },
   root: 'n8c',
   defaultEnv: 'default',
   n8nProjectId: '', // '' = the API key's default project; set to scope to one n8n project
@@ -17,9 +22,13 @@ const DEFAULT_CONFIG = {
 const ENV_TEMPLATE = [
   'N8N_BASE=',
   'N8N_API_KEY=',
-  'MONGO_URI=',
-  'MONGO_DB=',
   'N8C_CREDENTIAL_ENCRYPTION_KEY=',
+  '',
+  '# SQLITE_PATH=n8c.sqlite   # default backend; overrides sqlite.file in n8c.config.json',
+  '',
+  '# Set "database": "mongodb" in n8c.config.json to use these instead:',
+  '# MONGO_URI=',
+  '# MONGO_DB=',
   '',
 ].join('\n');
 

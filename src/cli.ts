@@ -54,6 +54,21 @@ export function renderPlanIgnored(ignored: { kind: string; localId: string; name
   return lines.join('\n');
 }
 
+// Entities that exist on n8n/in the DB but have no file. Never destroyed implicitly,
+// so `plan` says they are there. A workflow already archived on n8n is labelled: a
+// previous `--destroy` archived it (soft, recoverable), n8n still lists it, and the
+// next `--destroy` removes it for good — without the label that looks like the first
+// destroy silently failed.
+export function renderPlanOrphans(orphans: { kind: string; name: string; archived?: boolean }[]): string {
+  if (!orphans?.length) return '';
+  const one = orphans.length === 1;
+  const lines = [danger(`\n! ${orphans.length} ${one ? 'entity exists' : 'entities exist'} on n8n/in the DB but ${one ? 'no longer has a file' : 'no longer have files'}:`)];
+  for (const o of orphans) lines.push(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}${o.archived ? '  (already archived on n8n)' : ''}`));
+  lines.push(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
+  if (orphans.some((o) => o.archived)) lines.push(dim('  an already-archived workflow is deleted permanently; a live one is archived first.'));
+  return lines.join('\n');
+}
+
 function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[]; ignored?: any[] }): void {
   for (const r of state.resources) {
     if (r.action === 'noop') continue;
@@ -65,13 +80,8 @@ function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any
   console.log(`Plan: ${s.create} to create, ${s.update} to update, ${s.delete} to destroy.`);
   // Deleted-locally entities are never destroyed implicitly — say so loudly rather
   // than letting `plan` look like nothing happened.
-  const orphans = state.orphans ?? [];
-  if (orphans.length) {
-    const one = orphans.length === 1;
-    console.log(danger(`\n! ${orphans.length} ${one ? 'entity exists' : 'entities exist'} on n8n/in the DB but ${one ? 'no longer has a file' : 'no longer have files'}:`));
-    for (const o of orphans) console.log(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}`));
-    console.log(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
-  }
+  const orphansOut = renderPlanOrphans(state.orphans ?? []);
+  if (orphansOut) console.log(orphansOut);
   const ignoredOut = renderPlanIgnored(state.ignored ?? []);
   if (ignoredOut) console.log(ignoredOut);
 }
@@ -258,7 +268,8 @@ export function buildProgram(): Command {
           let database: string | undefined; let promptContents: boolean | undefined; let root: string | undefined;
           try {
             const cfg = JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'));
-            database = cfg.database; promptContents = cfg.database !== 'sqlite'; root = cfg.root;
+            // Mirror the runtime default (see context.ts): an absent `database` means sqlite.
+            database = cfg.database ?? 'sqlite'; promptContents = database !== 'sqlite'; root = cfg.root;
           } catch { /* no config yet — render the generic section */ }
           const file = join(cwd, 'AGENTS.md');
           const existing = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
@@ -269,7 +280,7 @@ export function buildProgram(): Command {
       if (!opts.projectOnly) {
         let config: any = {};
         try { config = JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8')); } catch {}
-        const database = config.database ?? 'mongodb';
+        const database = config.database ?? 'sqlite';
         const env = envOf() ?? config.defaultEnv ?? 'default';
         const vars = { ...loadEnv(cwd, env), ...process.env };
         if (database === 'mongodb' && !vars.MONGO_URI) { console.log('DB setup skipped (no MONGO_URI configured yet)'); return; }

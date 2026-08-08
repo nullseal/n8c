@@ -20,7 +20,19 @@ test('initProject scaffolds config, dirs, env template, gitignore', () => {
     assert.match(gi, /\.env\.\*/);
     assert.match(gi, /^dist\/$/m);
     assert.doesNotMatch(gi, /^n8c\/$/m, 'n8c/ is committed, not ignored');
-    assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"database":\s*"mongodb"/);
+    assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"database":\s*"sqlite"/);
+    assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"file":\s*"n8c\.sqlite"/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('env template carries no active Mongo vars (sqlite is the default backend)', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'n8c-init-'));
+  try {
+    initProject(cwd);
+    const env = readFileSync(join(cwd, '.env.example'), 'utf8');
+    assert.match(env, /^N8N_BASE=$/m);
+    assert.match(env, /^# MONGO_URI=$/m, 'Mongo vars are present but commented out');
+    assert.doesNotMatch(env, /^MONGO_/m, 'no uncommented MONGO_ var');
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 

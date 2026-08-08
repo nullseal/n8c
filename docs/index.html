@@ -246,7 +246,7 @@
       <div class="card">
         <div class="ic">⚡</div>
         <h3>Lightweight, no server needed</h3>
-        <p>Install in seconds — dependency-light (just <code>commander</code> + your DB driver). Store history in <b>MongoDB</b> for teams, or in a single <b>SQLite</b> file (built-in <code>node:sqlite</code>) with zero setup.</p>
+        <p>Install in seconds — dependency-light (just <code>commander</code>). History goes into a single <b>SQLite</b> file by default (built-in <code>node:sqlite</code>, zero setup); switch to <b>MongoDB</b> when a team needs to share it.</p>
       </div>
     </div>
   </div>
@@ -260,7 +260,7 @@
       <div class="table-scroll">
       <table class="cmds">
         <tr><td class="c">Node.js ≥ 22.18</td><td class="d">Or ≥ 23.6. n8c reads your project's <code>.ts</code> entity files at runtime using Node's built-in type stripping, on by default from these versions. On 22.6–22.17 use the <code>--experimental-strip-types</code> flag.</td></tr>
-        <tr><td class="c">A database</td><td class="d"><b>MongoDB</b> (teams / shared instances) <b>or SQLite</b> (a single local file, zero setup via built-in <code>node:sqlite</code>). See <a href="#backends">Storage backends</a>.</td></tr>
+        <tr><td class="c">A database</td><td class="d"><b>SQLite by default</b> — a single local file, zero setup via built-in <code>node:sqlite</code>, nothing to install or run. Switch to <b>MongoDB</b> for teams / shared instances. See <a href="#backends">Storage backends</a>.</td></tr>
         <tr><td class="c">n8n</td><td class="d">With the <b>Public API</b> enabled (API 1.1.x) and an API key.</td></tr>
       </table>
       </div>
@@ -272,7 +272,7 @@
   <div class="wrap">
     <div class="eyebrow">Quickstart</div>
     <h2>From zero to deployed in five steps</h2>
-    <p class="sub">Install once, point n8c at your n8n instance and a database (MongoDB or SQLite), and you're running the full loop.</p>
+    <p class="sub">Install once, point n8c at your n8n instance, and you're running the full loop — the default SQLite backend needs no database server.</p>
 
     <div class="codeblock" style="margin-bottom:44px">
       <button class="copy-btn">Copy</button>
@@ -285,7 +285,7 @@
         <div class="num">1</div>
         <div class="body">
           <h3>Scaffold the project</h3>
-          <p>Creates <code>n8c.config.json</code>, a <code>.env</code> template, a <code>.gitignore</code>, and reconciles the database indexes.</p>
+          <p>Creates <code>n8c.config.json</code>, a <code>.env</code> template, a <code>.gitignore</code>, and sets up the database — with the default SQLite backend that's just a local <code>n8c.sqlite</code> file, so there's nothing to start.</p>
           <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>n8c init</code></pre></div>
         </div>
       </div>
@@ -296,9 +296,13 @@
           <p>Edit <code>.env</code> with your connection details. These files are gitignored — secrets never get committed.</p>
           <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>N8N_BASE=https://your-n8n.example.com
 N8N_API_KEY=your-api-key
-MONGO_URI=mongodb://localhost:27017
-MONGO_DB=n8c
-N8C_CREDENTIAL_ENCRYPTION_KEY=a-strong-random-key</code></pre></div>
+N8C_CREDENTIAL_ENCRYPTION_KEY=a-strong-random-key
+
+# SQLITE_PATH=n8c.sqlite   # default backend; overrides sqlite.file in n8c.config.json
+
+# Set "database": "mongodb" in n8c.config.json to use these instead:
+# MONGO_URI=mongodb://localhost:27017
+# MONGO_DB=n8c</code></pre></div>
         </div>
       </div>
       <div class="step">
@@ -338,28 +342,36 @@ n8c apply</code></pre></div>
 <section id="backends">
   <div class="wrap">
     <div class="eyebrow">Storage backends</div>
-    <h2>MongoDB for teams, SQLite for zero setup</h2>
-    <p class="sub">The database is n8c's source of truth for version history. Pick the one that fits — set it with <code>database</code> in <code>n8c.config.json</code>; the whole workflow is otherwise identical.</p>
+    <h2>SQLite by default, MongoDB for teams</h2>
+    <p class="sub">The database is n8c's source of truth for version history. <code>n8c init</code> sets up <b>SQLite</b> — a single local file, no server — so the loop works out of the box. Change <code>database</code> in <code>n8c.config.json</code> to move to MongoDB; the whole workflow is otherwise identical.</p>
     <div class="table-wrap">
       <div class="table-scroll">
       <table class="cmp">
-        <thead><tr><th>Feature</th><th>MongoDB</th><th>SQLite</th></tr></thead>
+        <thead><tr><th>Feature</th><th>SQLite <span style="opacity:.7">(default)</span></th><th>MongoDB</th></tr></thead>
         <tbody>
-          <tr><td>Setup</td><td>a running MongoDB server</td><td>a single local file — zero setup</td></tr>
-          <tr><td>Dependency</td><td><code>mongodb</code> driver</td><td>built-in <code>node:sqlite</code> — nothing to install</td></tr>
+          <tr><td>Setup</td><td>a single local file — zero setup</td><td>a running MongoDB server</td></tr>
+          <tr><td>Dependency</td><td>built-in <code>node:sqlite</code> — nothing to install</td><td><code>mongodb</code> driver</td></tr>
           <tr><td>Versioning · plan/apply · releases · drop</td><td class="ok">✓</td><td class="ok">✓</td></tr>
           <tr><td>Multi-env credential mapping</td><td class="ok">✓</td><td class="ok">✓</td></tr>
           <tr><td>Encrypted credentials at rest</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-          <tr><td>Concurrency</td><td>multi-writer — shared team / CI</td><td>single-writer — one machine</td></tr>
-          <tr><td>Atomic <code>apply</code> snapshots</td><td>✓ (replica set recommended)</td><td>✓ (single-file, always)</td></tr>
-          <tr><td>DB backup command</td><td class="ok">✓ &nbsp;<code>n8c db export</code></td><td class="no">— just copy the <code>.sqlite</code> file</td></tr>
-          <tr><td>Runtime prompt-content registry</td><td class="ok">✓</td><td class="no">disabled</td></tr>
-          <tr><td>Best for</td><td>teams · shared staging / prod</td><td>solo dev · quick trial · CI</td></tr>
+          <tr><td>Concurrency</td><td>single-writer — one machine</td><td>multi-writer — shared team / CI</td></tr>
+          <tr><td>Atomic <code>apply</code> snapshots</td><td>✓ (single-file, always)</td><td>✓ (replica set recommended)</td></tr>
+          <tr><td>DB backup command</td><td class="no">— just copy the <code>.sqlite</code> file</td><td class="ok">✓ &nbsp;<code>n8c db export</code></td></tr>
+          <tr><td>Runtime prompt-content registry</td><td class="no">disabled</td><td class="ok">✓</td></tr>
+          <tr><td>Best for</td><td>solo dev · quick trial · CI</td><td>teams · shared staging / prod</td></tr>
         </tbody>
       </table>
       </div>
     </div>
     <div class="cols" style="margin-top:22px">
+      <div>
+        <h3 style="margin-bottom:10px">SQLite <span style="opacity:.7;font-weight:400">— the default</span></h3>
+        <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>// n8c.config.json — written by `n8c init`
+{ "database": "sqlite",
+  "sqlite": { "file": "n8c.sqlite" } }
+
+// .env — no database server needed</code></pre></div>
+      </div>
       <div>
         <h3 style="margin-bottom:10px">MongoDB</h3>
         <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>// n8c.config.json
@@ -368,14 +380,6 @@ n8c apply</code></pre></div>
 // .env
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=n8c</code></pre></div>
-      </div>
-      <div>
-        <h3 style="margin-bottom:10px">SQLite</h3>
-        <div class="codeblock"><button class="copy-btn">Copy</button><pre><code>// n8c.config.json
-{ "database": "sqlite",
-  "sqlite": { "file": "n8c.sqlite" } }
-
-// .env — no database server needed</code></pre></div>
       </div>
     </div>
     <div class="callout" style="margin-top:26px; border-left-color: var(--blue)">

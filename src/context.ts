@@ -22,7 +22,7 @@ export async function buildContext(cwd: string, kind: string, envFlag?: string) 
   const vars = { ...fileEnv, ...process.env };
   const root = join(cwd, config.root ?? 'n8c');
   const desc = entityByKind[kind];
-  const store = await createStore(config.database ?? 'mongodb', vars, { collectionPrefix: config.collectionPrefix, collections: config.collections, sqlite: config.sqlite });
+  const store = await createStore(config.database ?? 'sqlite', vars, { collectionPrefix: config.collectionPrefix, collections: config.collections, sqlite: config.sqlite });
   const n8n = vars.N8N_BASE ? new N8nClient(vars.N8N_BASE, vars.N8N_API_KEY ?? '', undefined, config.n8nProjectId || undefined) : undefined;
   const ctx: EntityContext = {
     env,

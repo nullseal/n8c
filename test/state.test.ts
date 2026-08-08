@@ -657,6 +657,90 @@ test('archived workflow with no file, no --destroy → orphan', async () => {
   assert.equal(state.resources.some((x) => x.localId === 'wf1'), false);
 });
 
+// A workflow that only ever existed on n8n (created in the UI, so no n8cLocalId
+// marker) has no entry in this env's mapping — `plan` invents a fresh localId for
+// it on every run. The n8n id is the ONLY stable handle apply can delete by, so the
+// plan must carry it; without it the delete had nothing to call n8n with.
+test('server-only workflow with no mapping + --destroy → delete carries the n8n serverId', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W_UI', name: 'Made in the UI', nodes: [], connections: {}, settings: {}, isArchived: false }],
+    file: null, destroy: true,
+  });
+  const r = state.resources.find((x) => x.action === 'delete');
+  assert.ok(r, 'planned as a delete');
+  assert.equal(r.kind, 'workflows');
+  assert.equal(r.serverId, 'W_UI', 'the n8n id reaches apply');
+  assert.notEqual(r.localId, 'W_UI', 'localId is the invented one, not the n8n id');
+});
+
+// The bug behind "destroy does not work": apply looked the n8n id up ONLY in the env
+// mapping, so an unmapped workflow was reported applied while n8n was never called —
+// and the orphan came back on the very next plan, forever.
+test('applyFromState: an unmapped workflow delete archives by serverId', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    const calls: string[] = [];
+    const n8n = {
+      listWorkflows: async () => [],
+      archiveWorkflow: async (id: string) => { calls.push(`archive:${id}`); },
+      deleteWorkflow: async (id: string) => { calls.push(`delete:${id}`); },
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 0, update: 0, noop: 0, delete: 1 },
+      resources: [{ kind: 'workflows', localId: 'invented-uuid', name: 'Made in the UI', action: 'delete', fromChecksum: null, toChecksum: null, serverId: 'W_UI' }], applied: null };
+    const done = await applyFromState(store, nroot, ctx, state);
+    assert.deepEqual(calls, ['archive:W_UI'], 'archived on n8n despite having no mapping');
+    assert.deepEqual(done.applied!.ok, ['invented-uuid']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Second round: the workflow the previous destroy archived still comes back from
+// listWorkflows() (unmapped, so a new localId again). --destroy must now finish it off.
+test('applyFromState: an unmapped ARCHIVED workflow delete hard-deletes by serverId', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    const calls: string[] = [];
+    const n8n = {
+      listWorkflows: async () => [],
+      archiveWorkflow: async (id: string) => { calls.push(`archive:${id}`); },
+      deleteWorkflow: async (id: string) => { calls.push(`delete:${id}`); },
+    };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 0, update: 0, noop: 0, delete: 1 },
+      resources: [{ kind: 'workflows', localId: 'another-uuid', name: 'Made in the UI', action: 'delete', fromChecksum: null, toChecksum: null, serverId: 'W_UI', archived: true }], applied: null };
+    await applyFromState(store, nroot, ctx, state);
+    assert.deepEqual(calls, ['delete:W_UI'], 'hard-deleted, never archived again');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// The mapping still wins when there is one — a mapped delete keeps using it.
+test('applyFromState: a mapped workflow delete still uses the mapping, not serverId', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const store = new MemoryStore();
+    await store.withTransaction((s) => store.putDefinitions('default', 'workflows', { w1: 'N_MAPPED' }, s));
+    const calls: string[] = [];
+    const n8n = { listWorkflows: async () => [], archiveWorkflow: async (id: string) => { calls.push(`archive:${id}`); } };
+    const ctx = { env: 'default', encrypted: false, n8n, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 0, update: 0, noop: 0, delete: 1 },
+      resources: [{ kind: 'workflows', localId: 'w1', name: 'W', action: 'delete', fromChecksum: 'c', toChecksum: null, serverId: 'STALE' }], applied: null };
+    await applyFromState(store, nroot, ctx, state);
+    assert.deepEqual(calls, ['archive:N_MAPPED']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// An orphan already archived on n8n must SAY so — otherwise a destroy that archived
+// it looks like it did nothing when the orphan reappears on the next plan.
+test('orphan for an archived workflow is flagged archived', async () => {
+  const state = await computePlanForArchivedTest({
+    server: [{ id: 'W1', name: 'Old', nodes: [], connections: {}, settings: {}, isArchived: true, meta: { n8cLocalId: 'wf1' } }],
+    file: null, destroy: false,
+  });
+  assert.equal(state.orphans?.find((o) => o.localId === 'wf1')?.archived, true);
+});
+
 // Control: a LIVE workflow with a differing file is still an update (behaviour preserved).
 test('non-archived workflow with a differing file → update (unchanged)', async () => {
   const state = await computePlanForArchivedTest({

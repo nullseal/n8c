@@ -6,7 +6,11 @@ import { credIdMap } from './cred-map.ts';
 export type PlanStatus = 'new' | 'changed' | 'identical' | 'removed';
 // setActive: desired active state to enforce (activate/deactivate) when it differs
 // from the server; undefined = leave active state as-is.
-export type PlanRow = { localId: string; name: string; status: PlanStatus; checksum: string; nodes?: any[]; setActive?: boolean; archived?: boolean };
+// serverId: the n8n id, carried on `removed` rows only. Those are the rows with no
+// file and possibly no env mapping — a workflow made in the n8n UI has neither, so
+// pullFromServer invents a localId for it and the n8n id is the ONLY handle apply
+// can delete by. (Rows that DO have a file resolve their id through the mapping.)
+export type PlanRow = { localId: string; name: string; status: PlanStatus; checksum: string; nodes?: any[]; setActive?: boolean; archived?: boolean; serverId?: string };
 
 // Put both sides of the diff in ONE credential-id namespace. Files store
 // env-neutral localIds (transfer.ts materializes them); n8n returns its own ids.
@@ -78,6 +82,6 @@ export async function planAgainstServer(store: Store, desc: EntityDescriptor, ro
     rows.push({ localId: d.localId, name: d.name, status, checksum: d.checksum, nodes: status === 'identical' ? undefined : nodes, setActive, archived: archivedByLocal.get(d.localId) ?? false });
   }
   // Deployed on the server but absent from the files → drift the other way.
-  for (const s of server as any[]) if (!seen.has(s.localId)) rows.push({ localId: s.localId, name: s.name, status: 'removed', checksum: '', archived: !!s.archived });
+  for (const s of server as any[]) if (!seen.has(s.localId)) rows.push({ localId: s.localId, name: s.name, status: 'removed', checksum: '', archived: !!s.archived, serverId: s.serverId ? String(s.serverId) : undefined });
   return rows;
 }

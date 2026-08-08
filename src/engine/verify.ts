@@ -55,9 +55,11 @@ export function driftFor(before: ServerFacts | undefined, after: ServerFacts, to
 
 // The server entities this plan will actually write, as n8n ids. Only
 // server-backed kinds qualify; prompts live in the DB and cannot drift on n8n.
-// A resource with no mapping is a create — there is nothing yet to drift.
+// A resource with no mapping is a create — there is nothing yet to drift, UNLESS the
+// plan carried an n8n id for it (a delete of a server-only workflow): that one does
+// touch the instance, so it must be guarded like any other write.
 export function touchedFromState(
-  state: { resources: { kind: string; localId: string; name: string; action: string }[] },
+  state: { resources: { kind: string; localId: string; name: string; action: string; serverId?: string }[] },
   defsByKind: Record<string, Record<string, any>>,
 ): Touched[] {
   const out: Touched[] = [];
@@ -65,7 +67,7 @@ export function touchedFromState(
     if (r.action === 'noop') continue;
     if (r.kind !== 'workflows' && r.kind !== 'credentials') continue;
     const mapped = defsByKind[r.kind]?.[r.localId];
-    const id = mapped?.id ?? mapped;
+    const id = mapped?.id ?? mapped ?? r.serverId;
     if (id === undefined || id === null) continue;
     out.push({ kind: r.kind, id: String(id), name: r.name });
   }

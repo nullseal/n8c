@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration, renderPlanIgnored, renderResourceId } from '../src/cli.ts';
+import { resolveGenerationRef, buildProgram, renderApplyTail, dirHasEntities, groupByGeneration, renderGeneration, renderPlanIgnored, renderPlanOrphans, renderResourceId } from '../src/cli.ts';
 import { setStyle } from '../src/style.ts';
 
 const perKind = () => [
@@ -191,6 +191,18 @@ test('renderPlanIgnored names archived workflows skipped for update, empty when 
   assert.ok(out.includes('Old Flow'), 'names the skipped workflow');
   assert.ok(out.includes('w1'), 'shows the id so the workflow is easy to find');
   assert.ok(out.toLowerCase().includes('archiv'), 'explains it is archived');
+});
+
+test('renderPlanOrphans points at --destroy, and marks an already-archived workflow', () => {
+  setStyle(false);
+  assert.equal(renderPlanOrphans([]), '', 'nothing to say when no orphans');
+  const live = renderPlanOrphans([{ kind: 'workflows', name: 'Old Flow' }]);
+  assert.ok(live.includes('Old Flow'), 'names the orphan');
+  assert.ok(live.includes('--destroy'), 'says how to remove it');
+  assert.ok(!live.includes('archived'), 'a live orphan is not labelled archived');
+  const arch = renderPlanOrphans([{ kind: 'workflows', name: 'Old Flow', archived: true }]);
+  assert.ok(arch.includes('already archived on n8n'), 'explains why it is still listed after a destroy');
+  assert.ok(arch.includes('permanently'), 'says what the next --destroy will do');
 });
 
 test('renderResourceId shows the localId, suppressed only when it just repeats the name', () => {

@@ -22,9 +22,10 @@ n8c apply       # deploy; every apply is a restorable release
 n8c restore <release>   # something broke? roll the whole instance back in one command
 ```
 
-Dependency-light: just [`commander`](https://www.npmjs.com/package/commander) and the
-[`mongodb`](https://www.npmjs.com/package/mongodb) driver — or Node's built-in SQLite, nothing extra
-to install.
+Dependency-light and zero setup: history goes into a single **SQLite** file by default (Node's
+built-in `node:sqlite` — no service to run), so the only runtime dependency you need is
+[`commander`](https://www.npmjs.com/package/commander). Switch to
+[`mongodb`](https://www.npmjs.com/package/mongodb) when you want a shared/team store.
 
 ---
 
@@ -52,17 +53,18 @@ environment automatically, so you never hand-edit IDs to promote a change.
 **A real plan/apply loop.** `plan` diffs your files against the *live* n8n server and freezes the
 actions into a state file; `apply` executes exactly that plan, pushing to n8n *before* recording
 success — so a failed deploy never leaves the database claiming it worked. And it's dependency-light:
-only [`mongodb`](https://www.npmjs.com/package/mongodb) (or built-in SQLite) and
-[`commander`](https://www.npmjs.com/package/commander).
+only [`commander`](https://www.npmjs.com/package/commander) on top of built-in SQLite (or
+[`mongodb`](https://www.npmjs.com/package/mongodb) if you opt into that backend).
 
 ## Requirements
 
 - **Node.js ≥ 22.18** (or ≥ 23.6) — n8c ships TypeScript sources and relies on Node's built-in type
   stripping, which is enabled by default from these versions. See
   [Cross-platform & Node versions](#cross-platform--node-versions).
-- **A database** — either **MongoDB** (full-featured; a replica set is recommended so `apply` can
-  snapshot atomically) or **SQLite** (a single local file, zero setup, via Node's built-in
-  `node:sqlite`). See [Storage backends](#storage-backends).
+- **A database** — **SQLite by default**: a single local file, nothing to install or run, via Node's
+  built-in `node:sqlite`. Switch to **MongoDB** for a shared/team store or the runtime prompt-content
+  feature (a replica set is recommended there so `apply` can snapshot atomically). See
+  [Storage backends](#storage-backends).
 - **n8n** with the **Public API** enabled (API 1.1.x) and an API key.
 
 ## Install
@@ -76,10 +78,11 @@ npx n8c --help
 ## Quickstart
 
 ```bash
-# 1. Scaffold config, .env and .gitignore, and reconcile DB indexes.
+# 1. Scaffold config, .env and .gitignore, and set up the DB.
+#    Defaults to SQLite, so this creates ./n8c.sqlite — no service to start.
 n8c init
 
-# 2. Fill in .env:  N8N_BASE, N8N_API_KEY, MONGO_URI, MONGO_DB,
+# 2. Fill in .env:  N8N_BASE, N8N_API_KEY,
 #    and (if you encrypt credentials) N8C_CREDENTIAL_ENCRYPTION_KEY.
 
 # 3. Import everything from your n8n instance into the DB and onto disk.
@@ -192,6 +195,14 @@ archived workflow still has a local file whose content differs, `plan` skips it 
 prints a line naming it; unarchive it in n8n to let the change apply. An archived
 workflow whose local file you deleted is still removable: `plan --destroy` plans a
 hard delete for it (a live workflow is archived instead, which is recoverable).
+
+Removing a file-less workflow therefore takes two rounds, by design: the first
+`--destroy` archives it, and because n8n keeps listing archived workflows, `plan`
+still reports it — labelled `(already archived on n8n)` so you can tell it apart
+from a destroy that did nothing. A second `--destroy` deletes it for good. This
+works whether or not n8c ever deployed the workflow: a workflow created in the
+n8n UI has no entry in n8c's mapping, so the delete targets the n8n id `plan`
+recorded.
 
 ### Stale-plan protection
 
@@ -337,24 +348,26 @@ creates new credentials in it, and transfers newly-created workflows into it.
 
 ## Storage backends
 
-Set the backend with `database` in `n8c.config.json`.
+Set the backend with `database` in `n8c.config.json`. **`sqlite` is the default** — `n8c init`
+writes `"database": "sqlite"` and everything works with no service running. Change that one field to
+`"mongodb"` (and set `MONGO_URI` / `MONGO_DB`) when you outgrow a single file.
 
-| Feature | **`mongodb`** | **`sqlite`** |
+| Feature | **`sqlite`** (default) | **`mongodb`** |
 |---|---|---|
-| Setup | a running MongoDB server | a single local file, zero setup |
-| Config | `MONGO_URI`, `MONGO_DB` in `.env` | `sqlite.file` in config, or `SQLITE_PATH` in `.env` (default `n8c.sqlite`) |
-| Dependency | `mongodb` npm driver | Node's built-in `node:sqlite` (nothing to install) |
+| Setup | a single local file, zero setup | a running MongoDB server |
+| Config | `sqlite.file` in config, or `SQLITE_PATH` in `.env` (default `n8c.sqlite`) | `MONGO_URI`, `MONGO_DB` in `.env` |
+| Dependency | Node's built-in `node:sqlite` (nothing to install) | `mongodb` npm driver |
 | Versioning, `plan` / `apply`, releases, `drop` | ✅ | ✅ |
 | Multi-env credential mapping (`definitions`) | ✅ | ✅ |
-| Concurrency | multi-writer — safe for a shared team/CI instance | single-writer — one machine / one file |
-| Atomic `apply` snapshots | ✅ (replica set recommended) | ✅ (single-file transactions, always) |
-| `db export` / `import` backup | ✅ | — (the `.sqlite` file *is* the backup — just copy it) |
-| Runtime **prompt-content** feature | ✅ | **disabled** (see below) |
-| Best for | teams, shared staging/prod, the runtime prompt registry | solo dev, a quick trial, a single instance, CI |
+| Concurrency | single-writer — one machine / one file | multi-writer — safe for a shared team/CI instance |
+| Atomic `apply` snapshots | ✅ (single-file transactions, always) | ✅ (replica set recommended) |
+| `db export` / `import` backup | — (the `.sqlite` file *is* the backup — just copy it) | ✅ |
+| Runtime **prompt-content** feature | **disabled** (see below) | ✅ |
+| Best for | solo dev, a quick trial, a single instance, CI | teams, shared staging/prod, the runtime prompt registry |
 
-SQLite is the quickest way to try n8c or to version a single instance — no services, just Node's
-built-in `node:sqlite`. MongoDB is the choice for a shared/team setup and is required if you use the
-runtime prompt-content registry.
+SQLite is the default because it makes the whole loop work out of the box — no services, just Node's
+built-in `node:sqlite`, and the file *is* the backup. Switch to MongoDB for a shared/team setup; it's
+also required if you use the runtime prompt-content registry.
 
 **Why prompt-content is disabled on SQLite.** The `prompt-contents` collection exists so an n8n
 `load_prompts` node can read runtime prompts from the database *while a workflow executes*. n8n can
@@ -363,8 +376,11 @@ and `list` simply skip the `prompt-contents` kind (n8c prints a note on `init`).
 workflows, build-time prompts, credentials, versioning, `plan`/`apply` — works identically.
 
 ```jsonc
-// n8c.config.json — SQLite backend
+// n8c.config.json — SQLite backend (the default, written by `n8c init`)
 { "database": "sqlite", "sqlite": { "file": "n8c.sqlite" } }
+
+// n8c.config.json — switch to MongoDB (then set MONGO_URI / MONGO_DB in .env)
+{ "database": "mongodb" }
 ```
 
 ## Commands
@@ -413,11 +429,12 @@ missing field like `allowedDomains`. The API key is never logged.
 
 ```jsonc
 {
-  "database": "mongodb",
+  "database": "sqlite",        // default backend; "mongodb" for a shared/team store
+  "sqlite": { "file": "n8c.sqlite" },
   "root": "n8c",
   "defaultEnv": "default",
   "n8nProjectId": "",          // "" = the API key's default project
-  "collectionPrefix": "n8c_",
+  "collectionPrefix": "n8c_",  // collectionPrefix/collections apply to the mongodb backend
   "collections": {
     "workflows": "n8c_workflows",
     "prompts": "n8c_prompts",
@@ -435,9 +452,13 @@ Per-environment settings come from `.env`, `.env.<env>` files (never committed):
 ```
 N8N_BASE=
 N8N_API_KEY=
-MONGO_URI=
-MONGO_DB=
 N8C_CREDENTIAL_ENCRYPTION_KEY=
+
+# SQLITE_PATH=n8c.sqlite   # default backend; overrides sqlite.file in n8c.config.json
+
+# Set "database": "mongodb" in n8c.config.json to use these instead:
+# MONGO_URI=
+# MONGO_DB=
 ```
 
 ## Deploy the same files to staging and prod
