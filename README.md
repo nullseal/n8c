@@ -380,10 +380,12 @@ makes it the live one. n8c maps its `active` flag onto that: activating publishe
 n8c reads a workflow as active when n8n reports an active version (`activeVersionId`), not the deprecated
 `active` field. When `n8nProjectId` is set, creating a workflow sends the project in the create call, so there is no separate transfer step.
 
-**API key scope.** Updating a published workflow makes n8n re-publish it, which needs an API key with the
-`workflow:activate` scope. Without it n8n answers 403 but **still keeps the new version as a draft**. n8c then
-reports that the new version was saved as a draft and the key lacks `workflow:activate`: grant the scope (or
-unpublish the workflow) and apply again.
+**API key permissions.** Updating a published workflow makes n8n re-publish it. When n8n refuses that publish
+with a 403 whose message names `workflow:activate` or `workflow:publish`, it **still keeps the new version as a
+draft**, and n8c says so: grant the API key that permission and re-run `n8c apply` on the **same saved plan** (a
+fresh `n8c plan` compares against n8n's saved draft and will show no change), or set `active: false` in the
+workflow's file. Any other 403 (for example a key without `workflow:update`, where n8n saved nothing) comes back
+as n8n's own error, unchanged.
 
 ## Storage backends
 

@@ -21,26 +21,51 @@ function make(Cls: typeof N8nClientV2, responder: (method: string, url: string) 
   return { calls, client: new Cls('https://n8n.test', 'KEY', fetchImpl as any, projectId) };
 }
 
+// A client whose req() throws `err`: lets a test prove updateWorkflow passes on
+// that SAME object (identity, not a look-alike copy).
+function throwing(Cls: typeof N8nClientV2, err: unknown): N8nClientV2 {
+  class Throwing extends Cls { protected async req(): Promise<any> { throw err; } }
+  return new Throwing('https://n8n.test', 'KEY');
+}
+// Shaped like the error req() throws for a failed PUT.
+const n8nError = (status: number, body: string) => Object.assign(new Error(`n8n PUT /api/v1/workflows/W1 -> ${status} ${body}`), { status });
+const rejection = (p: Promise<unknown>): Promise<any> => p.then(() => assert.fail('expected a rejection'), (e) => e);
+const GUIDANCE = /Grant it and re-run `n8c apply` on the SAME saved plan — a fresh `n8c plan` compares against n8n's saved draft and will show no change — or set `active: false` in the workflow's file\./;
+
 // ---- Shared behavior: V3 inherits it from V2, so both classes run the same suite.
 const classes: [string, typeof N8nClientV2][] = [['V2', N8nClientV2], ['V3', N8nClientV3]];
 
 for (const [name, Cls] of classes) {
-  test(`${name}: update 403 -> draft-explaining error naming workflow:activate`, async () => {
-    const { client } = make(Cls, () => ({ status: 403, text: 'forbidden' }));
-    await assert.rejects(() => client.updateWorkflow('W1', {}), (e: any) => {
-      assert.match(e.message, /saved the new version of workflow W1 as a DRAFT/);
-      assert.match(e.message, /workflow:activate/);
-      assert.match(e.message, /n8n PUT \/api\/v1\/workflows\/W1 -> 403 forbidden/);
-      return true;
-    });
+  test(`${name}: update 403 whose body names workflow:activate -> DRAFT error with recovery guidance`, async () => {
+    const body = '{"message":"API key lacks workflow:activate"}';
+    const { client } = make(Cls, () => ({ status: 403, text: body }));
+    const e = await rejection(client.updateWorkflow('W1', {}));
+    assert.match(e.message, /^n8n saved the new version of workflow W1 as a DRAFT and refused to publish it because the API key lacks the workflow:activate \/ workflow:publish permission\. /);
+    assert.match(e.message, GUIDANCE);
+    assert.doesNotMatch(e.message, /unpublish/, 'no "unpublish the workflow" advice');
+    assert.ok(e.message.endsWith(`(n8n PUT /api/v1/workflows/W1 -> 403 ${body})`), 'original error text appended');
+    assert.equal(e.status, 403);
+    assert.equal(e.cause.message, `n8n PUT /api/v1/workflows/W1 -> 403 ${body}`);
   });
 
-  test(`${name}: update non-403 error is rethrown untouched`, async () => {
-    const { client } = make(Cls, () => ({ status: 400, text: 'bad' }));
-    let thrown: any;
-    await client.updateWorkflow('W1', {}).catch((e) => { thrown = e; });
-    assert.equal(thrown.status, 400);
-    assert.equal(thrown.message, 'n8n PUT /api/v1/workflows/W1 -> 400 bad');
+  test(`${name}: update 403 whose body names workflow:publish -> DRAFT error keeping .status, .cause = the original`, async () => {
+    const original = n8nError(403, '{"message":"missing scope workflow:publish"}');
+    const e = await rejection(throwing(Cls, original).updateWorkflow('W1', {}));
+    assert.match(e.message, /as a DRAFT/);
+    assert.match(e.message, GUIDANCE);
+    assert.equal(e.status, 403);
+    assert.equal(e.cause, original);
+  });
+
+  test(`${name}: a 403 that does not name the publish permission is rethrown as the same object`, async () => {
+    // e.g. the key lacks workflow:update: n8n saved nothing, so there is no draft to claim.
+    const original = n8nError(403, '{"message":"Forbidden"}');
+    assert.equal(await rejection(throwing(Cls, original).updateWorkflow('W1', {})), original);
+  });
+
+  test(`${name}: a non-403 update error is rethrown as the same object`, async () => {
+    const original = n8nError(400, 'bad');
+    assert.equal(await rejection(throwing(Cls, original).updateWorkflow('W1', {})), original);
   });
 
   test(`${name}: update success returns the response`, async () => {
