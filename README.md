@@ -188,6 +188,26 @@ Override the prefix or any single name in `n8c.config.json`:
 - **`plan --destroy`** marks workflows that exist on the server but not in your files; `apply`
   **archives** them (soft, recoverable) rather than hard-deleting.
 
+A workflow is `changed` when any of these differ from the server: a node, the
+`active` flag, the workflow `name`, `connections`, `description`, `nodeGroups`, or a
+`settings` key your files actually set. `plan` names the parts that differ in
+parentheses, e.g. `~ workflow  [id]  MKD_ Orders  (name, load_prompts)`.
+
+Two things are deliberately never a reason to plan an update, though both are still
+pushed: `staticData` (n8n's runtime scratch space, which it rewrites between
+executions) and `settings` keys your files leave unset (n8n fills in its own
+defaults, and diffing those would leave every workflow permanently "changed").
+
+### Renaming a workflow
+
+Rename it in **both** files of the workflow's folder — `metadata.json` (which n8c
+displays) and the `name` in `apply.ts` (which is what n8n is sent) — then
+`plan` + `apply`. Workflows in the exploded layout (with a `nodes/` directory) build
+their body from `metadata.json`, so there is only one place to edit.
+
+`plan` refuses to run while the two disagree, naming both values, rather than
+printing the new name and deploying the old one.
+
 ### Archived workflows
 
 `plan` never updates a workflow that is archived on n8n — the API rejects it. If an

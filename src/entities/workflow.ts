@@ -14,11 +14,11 @@ const META_KEY = 'n8cLocalId';
 // read-only and makes the request 400 — so we whitelist rather than blacklist.
 // (per the `workflow` schema, additionalProperties:false; `pinData` is intentionally
 // NOT pushed — pins would override production execution.)
-const WRITABLE = ['name', 'description', 'nodes', 'connections', 'settings', 'staticData', 'nodeGroups'] as const;
+export const WRITABLE = ['name', 'description', 'nodes', 'connections', 'settings', 'staticData', 'nodeGroups'] as const;
 // n8n's GET returns MORE settings keys than its PUT/POST schema accepts (UI/instance
 // extras like binaryMode/timeSavedMode → 400 "settings must NOT have additional
 // properties"). Whitelist exactly the Public-API (1.1.x) workflowSettings keys.
-const WRITABLE_SETTINGS = ['saveExecutionProgress', 'saveManualExecutions', 'saveDataErrorExecution', 'saveDataSuccessExecution', 'executionTimeout', 'executionOrder', 'errorWorkflow', 'timezone', 'callerPolicy', 'callerIds', 'timeSavedPerExecution', 'redactionPolicy', 'availableInMCP', 'customTelemetryTags'] as const;
+export const WRITABLE_SETTINGS = ['saveExecutionProgress', 'saveManualExecutions', 'saveDataErrorExecution', 'saveDataSuccessExecution', 'executionTimeout', 'executionOrder', 'errorWorkflow', 'timezone', 'callerPolicy', 'callerIds', 'timeSavedPerExecution', 'redactionPolicy', 'availableInMCP', 'customTelemetryTags'] as const;
 // The node schema is additionalProperties:false too — a node key n8n's GET returns
 // but its PUT rejects (or the readOnly createdAt/updatedAt) would 400. Strip nodes
 // to the API-accepted keys.

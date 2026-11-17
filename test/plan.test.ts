@@ -157,3 +157,67 @@ test('planAgainstServer marks rows whose server workflow is archived', async () 
     assert.equal(arch.status, 'removed', 'no local file → removed (deletable)');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// --- fields outside `nodes` (rename & friends) -------------------------------
+// `plan` used to decide changed-vs-identical from the nodes array and the active
+// flag alone, so renaming a workflow — the one field n8n shows you — was a silent
+// no-op: the plan printed the NEW name (read from the file) next to "identical".
+const named = (name: string, extra: any = {}) => ({ name, nodes: [{ id: 'n1', name: 'A', parameters: { x: 1 } }], connections: {}, ...extra });
+
+test('planDiff: renaming the workflow is a change (name is pushed, so it must be diffed)', () => {
+  const r = planDiff(named('New Name'), named('Old Name'));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['name']);
+});
+
+test('planDiff: rewiring connections is a change even when every node is identical', () => {
+  const r = planDiff(named('W', { connections: { A: { main: [[{ node: 'B', type: 'main', index: 0 }]] } } }), named('W'));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['connections']);
+});
+
+test('planDiff: changing a settings value the file sets is a change', () => {
+  const r = planDiff(named('W', { settings: { executionOrder: 'v1' } }), named('W', { settings: { executionOrder: 'v0' } }));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['settings.executionOrder']);
+});
+
+// Subset semantics: a push only sends what the file defines, so a setting n8n
+// filled in on its own is not drift. Demanding equality here would make every
+// n8c-created workflow read as changed forever, pushing `settings: {}` in a loop.
+test('planDiff: a setting n8n defaulted but the file never set is NOT a change', () => {
+  const r = planDiff(named('W', { settings: {} }), named('W', { settings: { executionOrder: 'v1', binaryMode: 'default' } }));
+  assert.equal(r.status, 'identical');
+});
+
+test('planDiff: a settings key n8n\'s API does not accept is never diffed', () => {
+  const r = planDiff(named('W', { settings: { binaryMode: 'filesystem' } }), named('W', { settings: { binaryMode: 'default' } }));
+  assert.equal(r.status, 'identical', 'binaryMode is read-only — a diff on it could never be applied');
+});
+
+// The [n8c-managed] marker is appended by n8c itself (layout.ts), not written by
+// the operator. Diffing it raw would flip EVERY workflow in a repo to "changed"
+// the first time this comparison shipped, over text nobody edited.
+test('planDiff: the [n8c-managed] description marker alone is not a change', () => {
+  const r = planDiff(named('W', { description: '[n8c-managed]' }), named('W'));
+  assert.equal(r.status, 'identical');
+});
+
+test('planDiff: a real description edit IS a change', () => {
+  const r = planDiff(named('W', { description: 'Handles refunds\n[n8c-managed]' }), named('W', { description: '[n8c-managed]' }));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['description']);
+});
+
+test('planDiff: meta is never diffed (n8n rejects it on push)', () => {
+  const r = planDiff(named('W', { meta: { n8cLocalId: 'wf1' } }), named('W', { meta: { instanceId: 'abc' } }));
+  assert.equal(r.status, 'identical');
+});
+
+// staticData is n8n's own runtime scratch space ($getWorkflowStaticData persists
+// into it between executions), not authored config. Diffing it would report a
+// change on every workflow that uses it, every time it ran.
+test('planDiff: staticData drift on the server is not a change', () => {
+  const r = planDiff(named('W', { staticData: { cursor: 1 } }), named('W', { staticData: { cursor: 99 } }));
+  assert.equal(r.status, 'identical');
+});

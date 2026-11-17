@@ -51,6 +51,14 @@ function pathToFileUrl(p: string): string {
 export interface EntityPrompt { localId: string; name: string; body: unknown; }
 export interface ReadEntityResult { metadata: any; body: unknown; prompts: EntityPrompt[]; }
 
+// Stamped into every workflow description n8c writes, so a workflow's origin is
+// visible in the n8n UI. It is n8c's own text, never the operator's — comparisons
+// strip it (see stripManagedMarker) so the marker alone never reads as drift.
+export const MANAGED_MARKER = '[n8c-managed]';
+export function stripManagedMarker(description: unknown): string {
+  return typeof description === 'string' ? description.split(MANAGED_MARKER).join('').trim() : '';
+}
+
 export async function readEntity(root: string, kind: string, localId: string, codeByNode: Record<string, string> = {}): Promise<ReadEntityResult> {
   const dir = entityDir(root, kind, localId);
   const metadata = JSON.parse(readFileSync(join(dir, 'metadata.json'), 'utf8'));
@@ -109,7 +117,7 @@ export async function readEntity(root: string, kind: string, localId: string, co
     }
     const { connections: _c, ...rest } = metadata;
     const desc = (metadata.description ?? '').trim();
-    const description = desc.includes('[n8c-managed]') ? desc : (desc ? desc + '\n[n8c-managed]' : '[n8c-managed]');
+    const description = desc.includes(MANAGED_MARKER) ? desc : (desc ? desc + '\n' + MANAGED_MARKER : MANAGED_MARKER);
     return { metadata, body: { ...rest, nodes, connections, description }, prompts };
   }
   const body = await runApply(join(dir, 'apply.ts'));

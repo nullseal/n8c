@@ -69,12 +69,20 @@ export function renderPlanOrphans(orphans: { kind: string; name: string; archive
   return lines.join('\n');
 }
 
+// What is actually changing, in parentheses after the name: the workflow fields a
+// push would rewrite (name, connections, settings.executionOrder, …) followed by
+// the drifting node names. Without the field half, a rename showed up as a bare
+// "changed" with nothing to explain it.
+export function renderChangedParts(r: { fields?: string[]; nodes?: { name: string }[] }): string {
+  const parts = [...(r.fields ?? []), ...(r.nodes ?? []).map((n) => n.name)];
+  return parts.length ? '  (' + parts.join(', ') + ')' : '';
+}
+
 function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[]; ignored?: any[] }): void {
   for (const r of state.resources) {
     if (r.action === 'noop') continue;
     const type = KIND_TO_SINGULAR[r.kind] ?? r.kind;
-    const nodes = r.nodes?.length ? '  (' + r.nodes.map((n: any) => n.name).join(', ') + ')' : '';
-    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${renderResourceId(r)}${r.name}${nodes}`);
+    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${renderResourceId(r)}${r.name}${renderChangedParts(r)}`);
   }
   const s = state.summary;
   console.log(`Plan: ${s.create} to create, ${s.update} to update, ${s.delete} to destroy.`);

@@ -15,6 +15,9 @@ export interface Resource {
   kind: string; localId: string; name: string; action: Action;
   fromChecksum: string | null; toChecksum: string | null;
   nodes?: { name: string; status: string }[];
+  // Fields outside `nodes` that a push would change (name, connections, settings.*,
+  // description, staticData). Display only — apply pushes the whole body.
+  fields?: string[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
   archived?: boolean;  // a delete of an already-archived workflow → hard delete, not archive
   // workflows only, deletes only: the n8n id read off the server at plan time. A
@@ -242,6 +245,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
       fromChecksum: action === 'create' ? null : (r.checksum || null),
       toChecksum: r.checksum || null,
       nodes: (r.nodes ?? []).filter((n: any) => n.status !== 'identical').map((n: any) => ({ name: n.name, status: n.status })),
+      fields: r.fields,
       setActive: r.setActive,
     });
   }
