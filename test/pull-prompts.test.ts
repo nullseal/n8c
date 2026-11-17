@@ -105,3 +105,11 @@ test('re-pull reuses localIds by provenance (stable across edits, even before a 
   assert.notEqual(r3.checksum, r1.checksum, 'edited prompt changes the bundle checksum');
   assert.equal(r3.docs.find((d) => (d.body as any).type === 'system')!.localId, firstSysId, 'same provenance keeps the same localId across edits');
 });
+
+test('pull --from-nodes refuses without an n8n connection', async () => {
+  const store = new MemoryStore();
+  await assert.rejects(
+    () => pullPromptsFromNodes(store, { env: 'staging', encrypted: false, getDefinitions: async () => ({}) } as any),
+    /prompt pull --from-nodes needs an n8n connection/,
+  );
+});

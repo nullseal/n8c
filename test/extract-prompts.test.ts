@@ -52,3 +52,11 @@ test('classifies a Human message template as user', () => {
     messages: { messageValues: [{ type: 'HumanMessagePromptTemplate', message: 'hi' }] } } }] });
   assert.equal(got[0].type, 'user');
 });
+
+test('extractWorkflowPrompts tolerates a missing workflow and nodes lacking type/parameters/name', () => {
+  assert.deepEqual(extractWorkflowPrompts(undefined), []);
+  assert.deepEqual(extractWorkflowPrompts({ nodes: [{}, { type: 'x.agent' }] }), []);
+  // an agent node with no name still yields its prompt, with an empty nodeName
+  const out = extractWorkflowPrompts({ nodes: [{ type: 'x.agent', parameters: { text: 'hello' } }] });
+  assert.deepEqual(out, [{ nodeName: '', nodeType: 'x.agent', type: 'user', content: 'hello', index: 0 }]);
+});

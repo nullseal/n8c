@@ -221,3 +221,52 @@ test('planDiff: staticData drift on the server is not a change', () => {
   const r = planDiff(named('W', { staticData: { cursor: 1 } }), named('W', { staticData: { cursor: 99 } }));
   assert.equal(r.status, 'identical');
 });
+
+test('normalizeCredentials: tolerates a missing body and nodes without nodes/credentials', () => {
+  assert.deepEqual(normalizeCredentials(undefined, {}), {});
+  assert.deepEqual(normalizeCredentials({ name: 'W' }, {}), { name: 'W' });
+});
+
+test('normalizeCredentials: a credential ref without an id is dropped, and the credentials key goes with it', () => {
+  const out = normalizeCredentials({ nodes: [
+    { name: 'A', credentials: { openAiApi: { name: 'only a name' } } },
+    { name: 'B', credentials: { openAiApi: null, slackApi: { id: 'L1', name: 'S' } } },
+  ] }, { L1: 'N1' });
+  assert.equal('credentials' in out.nodes[0], false, 'all refs idless → credentials removed');
+  assert.deepEqual(out.nodes[1].credentials, { slackApi: { credentialId: 'N1' } }, 'idless ref skipped, mapped ref kept');
+});
+
+test('planDiff: a new workflow with id-less / name-less nodes names each node by whichever it has, and survives no nodes at all', () => {
+  const r = planDiff({ nodes: [{ name: 'OnlyName' }, { id: 'only-id' }] }, undefined);
+  assert.equal(r.status, 'new');
+  assert.deepEqual(r.nodes.map((n: any) => [n.id, n.name]), [['OnlyName', 'OnlyName'], ['only-id', 'only-id']]);
+  assert.deepEqual(planDiff({}, undefined).nodes, []);
+});
+
+test('planAgainstServer: refuses without an n8n connection', async () => {
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const ctx = { env: 'default', encrypted: false, getDefinitions: async () => ({}) } as any;
+  await assert.rejects(() => planAgainstServer(new MemoryStore(), entityByKind['workflows'], '/nonexistent', ctx), /--plan needs an n8n connection/);
+});
+
+test('planAgainstServer: refuses kinds with no server state to compare', async () => {
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const ctx = { env: 'default', encrypted: false, n8n: {}, getDefinitions: async () => ({}) } as any;
+  await assert.rejects(() => planAgainstServer(new MemoryStore(), entityByKind['prompts'], '/nonexistent', ctx), /--plan is not supported for prompts/);
+});
+
+test('planAgainstServer: a server-only row from a source that reports no serverId carries serverId undefined', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const root = mkdtempSync(join(tmpdir(), 'n8c-noid-'));
+  try {
+    // a descriptor whose server listing has no serverId (a defensive case: the workflow
+    // descriptor always stringifies the id)
+    const desc = { ...entityByKind['workflows'], pullFromServer: async () => [{ localId: 'ghost', name: 'Ghost', body: {} }] } as any;
+    const ctx = { env: 'default', encrypted: false, n8n: {}, getDefinitions: async () => ({}) } as any;
+    const rows = await planAgainstServer(new MemoryStore(), desc, root, ctx);
+    assert.deepEqual(rows, [{ localId: 'ghost', name: 'Ghost', status: 'removed', checksum: '', archived: false, serverId: undefined }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

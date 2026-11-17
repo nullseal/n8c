@@ -93,3 +93,9 @@ test('credIdMap: localId → n8n id, accepting both {id,name} and bare-string va
   assert.deepEqual(credIdMap({}), {}, 'empty mapping is empty, not a crash');
   assert.deepEqual(credIdMap(undefined as any), {}, 'missing mapping is tolerated');
 });
+
+test('credIndex and normalizeMapping treat an absent mapping as empty', () => {
+  // defensive fallback: callers always pass an object, but a store may hand back nothing
+  assert.equal(credIndex(undefined as any).size, 0);
+  assert.deepEqual(normalizeMapping(undefined as any), {});
+});

@@ -783,3 +783,51 @@ test('computePlan rejects with a bulleted list when validation fails', async () 
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('statePath: an empty env name falls back to the default state file', () => {
+  assert.equal(statePath('/proj', ''), join('/proj', '.states', 'n8c.state.json'));
+  assert.equal(statePath('/proj', 'prod'), join('/proj', '.states', 'n8c.state.prod.json'));
+});
+
+test('applyFromState: a planned resource whose file disappeared is reported failed, not applied', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    writePrompt(nroot, 'p1', 'main', 'hello'); // some desired doc exists, but not the planned one
+    const store = new MemoryStore();
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 1, update: 0, noop: 0, delete: 0 },
+      resources: [{ kind: 'prompts', localId: 'ghost', name: 'Ghost', action: 'create', fromChecksum: null, toChecksum: 'x' }], applied: null };
+    const done = await applyFromState(store, nroot, ctxOf(store), state);
+    assert.deepEqual(done.applied!.ok, []);
+    assert.deepEqual(done.applied!.failed, [{ localId: 'ghost', error: 'desired doc missing (files changed?)' }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('applyFromState: creating a workflow pushes it as new and records the id n8n returned', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    writeWorkflow(nroot, 'w1', 'W', [{ id: 'n1', name: 'A', parameters: {} }]);
+    const store = new MemoryStore();
+    const created: any[] = [];
+    const n8n = { listWorkflows: async () => [], createWorkflow: async (b: any) => { created.push(b); return { id: 'NEW1' }; } };
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 1, update: 0, noop: 0, delete: 0 },
+      resources: [{ kind: 'workflows', localId: 'w1', name: 'W', action: 'create', fromChecksum: null, toChecksum: 'x' }], applied: null };
+    const done = await applyFromState(store, nroot, ctxOf(store, n8n), state);
+    assert.deepEqual(done.applied!.ok, ['w1']);
+    assert.equal(created.length, 1, 'created on n8n');
+    assert.deepEqual(await store.getDefinitions('default', 'workflows'), { w1: 'NEW1' });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('applyFromState: a push that rejects with a non-Error value is reported with its string form', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    writeWorkflow(nroot, 'w1', 'W', [{ id: 'n1', name: 'A', parameters: {} }]);
+    const store = new MemoryStore();
+    // defensive fallback: a thrown string has no .message, so the value itself is reported
+    const n8n = { listWorkflows: async () => [], createWorkflow: async () => { throw 'gateway timeout'; } };
+    const state: State = { env: 'default', n8cVersion: '0', createdAt: '', desiredChecksum: '', summary: { create: 1, update: 0, noop: 0, delete: 0 },
+      resources: [{ kind: 'workflows', localId: 'w1', name: 'W', action: 'create', fromChecksum: null, toChecksum: 'x' }], applied: null };
+    const done = await applyFromState(store, nroot, ctxOf(store, n8n), state);
+    assert.deepEqual(done.applied!.failed, [{ localId: 'w1', error: 'gateway timeout' }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

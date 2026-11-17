@@ -59,3 +59,10 @@ test('restoreBackup rejects a non-n8c file', async () => {
 test('MemoryStore has no backup port (mongodb only)', () => {
   assert.throws(() => new MemoryStore().backupDb(), /only supported for the mongodb store/);
 });
+
+test('restoreBackup accepts a collection saved without a docs or indexes list', async () => {
+  const dst = fakeDb();
+  const file = { format: 'n8c-backup/1', n8cVersion: '0', createdAt: '', db: 'x', collections: { n8c_bare: {} } } as any;
+  assert.deepEqual(await restoreBackup(dst, file), { collections: 1, docs: 0, indexes: 0 });
+  assert.deepEqual(dst.cols.get('n8c_bare'), { docs: [], indexes: [] });
+});

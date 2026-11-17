@@ -57,3 +57,15 @@ test('MemoryStore.init reports replica set true (no-op)', async () => {
   const r = await new MemoryStore().init();
   assert.equal(r.replicaSet, true);
 });
+
+test('initProject appends missing ignores to an existing .gitignore, keeping what is there', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'n8c-init-'));
+  try {
+    writeFileSync(join(cwd, '.gitignore'), 'node_modules');
+    const touched = initProject(cwd);
+    assert.ok(touched.includes('.gitignore'));
+    const gi = readFileSync(join(cwd, '.gitignore'), 'utf8');
+    assert.ok(gi.startsWith('node_modules\n'), 'existing content kept, newline normalised');
+    assert.match(gi, /^dist\/?$/m);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});

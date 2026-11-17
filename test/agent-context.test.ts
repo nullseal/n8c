@@ -98,3 +98,9 @@ test('upsertAgentsMd: single well-formed pair replaces cleanly (control)', () =>
   assert.equal(result.split(N8C_START).length, 2, 'exactly one marker pair');
   assert.ok(result.includes('n8c pull  '), 'updated section applied');
 });
+
+test('upsertAgentsMd: appending to a file without a trailing newline adds a blank-line separator', () => {
+  const section = renderAgentSection({});
+  assert.equal(upsertAgentsMd('# Title', section), '# Title\n\n' + section + '\n');
+  assert.equal(upsertAgentsMd('# Title\n', section), '# Title\n\n' + section + '\n');
+});

@@ -50,3 +50,18 @@ test('readEntity injects built jsCode into the targeted node', async () => {
     assert.equal(node.parameters.mode, 'runOnceForAllItems', 'other params preserved');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('buildSources skips loose files and unit dirs missing metadata.json or code.ts', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'n8c-proj-'));
+  try {
+    mkdirSync(join(cwd, 'src', 'no-code'), { recursive: true });
+    writeFileSync(join(cwd, 'src', 'no-code', 'metadata.json'), JSON.stringify({ target: 'n1' }));
+    mkdirSync(join(cwd, 'src', 'no-meta'), { recursive: true });
+    writeFileSync(join(cwd, 'src', 'no-meta', 'code.ts'), 'return [];\n');
+    writeFileSync(join(cwd, 'src', 'README.md'), 'not a unit\n');
+    const { codeByNode, units } = await buildSources(cwd);
+    assert.deepEqual(units, []);
+    assert.deepEqual(codeByNode, {});
+    assert.equal(existsSync(join(cwd, 'dist')), false, 'nothing built, no dist dir');
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});

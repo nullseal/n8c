@@ -28,6 +28,16 @@ test('create prompt writes key into metadata', () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('create credential: an empty --type defaults to httpHeaderAuth; an empty name still yields a CREDENTIAL_TOKEN variable', () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    const g = createEntity(root, 'credential', { name: '', nodeType: '' });
+    const src = readFileSync(join(g.dir, 'apply.ts'), 'utf8');
+    assert.match(src, /type: "httpHeaderAuth"/);
+    assert.match(src, /process\.env\.CREDENTIAL_TOKEN/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('create credential scaffolds a process.env secret, not a hard-coded token', () => {
   const root = mkdtempSync(join(tmpdir(), 'n8c-'));
   try {
@@ -35,5 +45,12 @@ test('create credential scaffolds a process.env secret, not a hard-coded token',
     const apply = readFileSync(join(g.dir, 'apply.ts'), 'utf8');
     assert.match(apply, /process\.env\.SHOPIFY_ADMIN_TOKEN/); // reads the secret from .env at read time
     assert.doesNotMatch(apply, /shpat_/); // never a real secret
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('create rejects an unknown entity type', () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    assert.throws(() => createEntity(root, 'gizmo' as any, { name: 'x' }), /unknown entity type gizmo/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
