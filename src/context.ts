@@ -10,7 +10,7 @@ import type { EntityContext } from './entities/types.ts';
 export async function buildContext(cwd: string, kind: string, envFlag?: string) {
   let config: any = {};
   try { config = JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8')); } catch {}
-  // Validated unconditionally: a bad n8nVersion fails every command, even DB-only ones.
+  // Validated unconditionally: a bad n8nVersion fails every command that builds a project context, even DB-only ones.
   const n8nVersion = resolveN8nVersion(config.n8nVersion);
   const env = envFlag ?? config.defaultEnv ?? 'default';
   const fileEnv = loadEnv(cwd, env);

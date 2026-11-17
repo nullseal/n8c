@@ -19,8 +19,8 @@ test('CLI runs main() when invoked through a symlink', () => {
     symlinkSync(cli, link);
     writeFileSync(join(dir, 'n8c.config.json'), JSON.stringify({ root: 'n8c', defaultEnv: 'default' }));
 
-    const out = execFileSync('node', [link, 'create', 'prompt', '--name=greet', '--key=greet_sys'], {
-      cwd: dir, encoding: 'utf8',
+    const out = execFileSync(process.execPath, [link, 'create', 'prompt', '--name=greet', '--key=greet_sys'], {
+      cwd: dir, encoding: 'utf8', timeout: 30_000,
     });
     assert.match(out, /created prompt/);
     const ids = readdirSync(join(dir, 'n8c', 'prompts'));

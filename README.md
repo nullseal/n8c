@@ -65,7 +65,7 @@ only [`commander`](https://www.npmjs.com/package/commander) on top of built-in S
   built-in `node:sqlite`. Switch to **MongoDB** for a shared/team store or the runtime prompt-content
   feature (a replica set is recommended there so `apply` can snapshot atomically). See
   [Storage backends](#storage-backends).
-- **n8n** with the **Public API** enabled on **n8n 2.x or 3.x** (Public API v1) and an API key. See [n8n versions](#n8n-versions).
+- **n8n** with the **Public API** enabled on **n8n 2.x or 3.x** (Public API v1) and an API key. Some features need a later 2.x release; see [n8n versions](#n8n-versions).
 
 ## Install
 
@@ -365,7 +365,8 @@ Use `--debug` to see the exact payload (with secrets redacted) if a credential i
 
 By default n8c uses the API key's default (personal) project. If your workflows live in a **team
 project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project
-and creates new credentials directly in it. New workflows end up there too: with `"n8nVersion": "3"` the
+and creates new credentials directly in it (on n8n 2.18 or later; before that n8n puts a new credential in the
+API key's personal project). New workflows end up there too: with `"n8nVersion": "3"` the
 create call names the project; with `"2"` n8c creates the workflow, then transfers it to the project.
 
 ## n8n versions
@@ -379,28 +380,35 @@ commands, so the call does).
 
 | `n8nVersion` | Use with | Activate / deactivate | New workflow when `n8nProjectId` is set |
 |---|---|---|---|
-| `"2"` | every n8n 2.x release | `POST /workflows/{id}/activate`, `…/deactivate` | `POST /workflows`, then `PUT /workflows/{id}/transfer` to the project |
+| `"2"` | n8n 2.x (minimums per feature below) | `POST /workflows/{id}/activate`, `…/deactivate` | `POST /workflows`, then `PUT /workflows/{id}/transfer` to the project |
 | `"3"` (default) | n8n 3.x, and n8n 2.33+ | `POST /workflows/{id}/publish`, `…/unpublish` | `POST /workflows` with `projectId` in the body, no transfer |
 
 **n8n 1.x is no longer supported.** **Upgrading:** a repo pointed at an n8n 2.x server must set
 `"n8nVersion": "2"`. A config without `n8nVersion` is read as `"3"`, which uses endpoints that n8n 2.x
 before 2.33 does not have.
 
+`"2"` works with n8n 2.x. Workflows themselves (create, update, list, activate, transfer) work on every 2.x
+release; some other features need a later one:
+
+- credential updates (`PATCH /credentials/{id}`): n8n 2.4.0 or later;
+- credential listing (`GET /credentials`, used by `pull`, `plan` and apply's drift check): n8n 2.8.0 or later;
+- archiving a workflow (`POST /workflows/{id}/archive`, used by `plan --destroy` and `apply`): n8n 2.15.0 or later;
+- creating a credential directly in `n8nProjectId`: n8n 2.18.0 or later (before that, new credentials land in
+  the API key's personal project).
+
 n8n 2.x and 3.x replaced "active" with **save vs publish**: saving a workflow stores a version, publishing
 makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes
 (through the endpoints in the table), and n8c reads a workflow as active when n8n reports an active version
 (`activeVersionId`), not the deprecated `active` field.
-
-Whatever the setting, `apply` archives a live workflow (after `plan --destroy`) with
-`POST /workflows/{id}/archive`, which n8n's public API only has from 2.15.
 
 **API key permissions.** Updating a published workflow makes n8n re-publish it. When n8n refuses that publish
 with a 403 whose message names `workflow:activate` or `workflow:publish`, it **still keeps the new version as a
 draft**, and n8c says so: grant the API key that permission and re-run `n8c apply` on the **same saved plan** (a
 fresh `n8c plan` compares against n8n's saved draft and will show no change), or, to deploy without publishing,
 unpublish the workflow in n8n first **and** set `active: false` in its file (the PUT would otherwise re-publish
-it and hit the same 403 before any deactivate step). Any other 403 (for example a key without `workflow:update`, where n8n saved nothing) comes back
-as n8n's own error, unchanged.
+it and hit the same 403 before any deactivate step), then run `n8c pull` to record the version n8n already saved
+(a fresh `plan` is a no-op there, so n8c's database would never learn of it). Any other 403 (for example a key
+without `workflow:update`, where n8n saved nothing) comes back as n8n's own error, unchanged.
 
 ## Storage backends
 
@@ -489,7 +497,7 @@ missing field like `allowedDomains`. The API key is never logged.
   "sqlite": { "file": "n8c.sqlite" },
   "root": "n8c",
   "defaultEnv": "default",
-  "n8nVersion": "3",           // "3" (default when absent): n8n 3.x and 2.33+; "2": any n8n 2.x; no 1.x
+  "n8nVersion": "3",           // "3" (default when absent): n8n 3.x and 2.33+; "2": n8n 2.x (see below); no 1.x
   "n8nProjectId": "",          // "" = the API key's default project
   "collectionPrefix": "n8c_",  // collectionPrefix/collections apply to the mongodb backend
   "collections": {

@@ -807,13 +807,19 @@ flowchart TD
 
 - `/publish`, `/unpublish` and `projectId` on create only arrived during 2.x (publish and unpublish in 2.33), so
   `N8nClientV2` activates, deactivates and assigns a project through `/activate`, `/deactivate` and `/transfer`,
-  which all of 2.x serves. `N8nClientV3` overrides `createWorkflow`, `activateWorkflow` and `deactivateWorkflow`
+  which every 2.x release serves. `N8nClientV3` overrides `createWorkflow`, `activateWorkflow` and `deactivateWorkflow`
   for n8n 3.x; the endpoints it uses also exist from 2.33.
+- Other features need a later 2.x release than the workflow calls do: credential updates (`PATCH /credentials/{id}`)
+  from 2.4.0, credential listing (`GET /credentials`) from 2.8.0, `archiveWorkflow` (`POST /workflows/{id}/archive`)
+  from 2.15.0, and `projectId` honored on credential create from 2.18.0 (before that, n8n puts a new credential in
+  the API key's personal project).
 - n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.
 - A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
   `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and
   how to recover: grant the permission and re-run `n8c apply` on the same saved plan (a fresh `n8c plan` compares
-  against the saved draft and shows no change), or, to deploy without publishing, unpublish the workflow in n8n first and set `active: false` in its file (apply pushes the body before it changes the active state, so a still-published workflow re-publishes on the PUT and hits the same 403). Any other 403 (for
+  against the saved draft and shows no change), or, to deploy without publishing, unpublish the workflow in n8n first and set `active: false` in its file (apply pushes the body before it changes
+  the active state, so a still-published workflow re-publishes on the PUT and hits the same 403), then run
+  `n8c pull` to record the version n8n already saved (a fresh plan is a no-op there). Any other 403 (for
   example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
 
