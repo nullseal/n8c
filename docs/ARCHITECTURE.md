@@ -45,7 +45,7 @@ flowchart TB
     FILES["n8c/{kind}/{localId}/<br/>metadata.json + apply.ts"]
     UNITS["src/{unit}/<br/>Code-node units"]
     FILES --> RE["readEntity"]
-    UNITS -->|"buildSources: codeByNode, used only by the<br/>staleness checksum (desiredBundleChecksum,<br/>recomputed by plan and by the apply<br/>handler files-unchanged check),<br/>NOT the plan diff or validateAll<br/>(known gap)"| CP
+    UNITS -->|"buildSources: codeByNode, inlined into the<br/>workflow plan diff (planAgainstServer) and<br/>the staleness checksum (desiredBundleChecksum,<br/>recomputed by plan and by the apply<br/>handler files-unchanged check),<br/>not validateAll"| CP
     UNITS -->|"codeByNode"| AFS
     RE -->|"apply re-reads files + codeByNode<br/>(desiredByKind)"| AFS
     RE --> VAL["validateAll"]
@@ -67,7 +67,7 @@ flowchart TB
     GATE -->|"block or stop"| HALT(["exit 1, nothing applied"])
     GATE -->|"proceed"| AFS["applyFromState"]
     CP -->|"apply --force:<br/>fresh plan, no gate"| AFS
-    AFS -->|"push, archive, delete,<br/>activate, deactivate<br/>(n8nVersion 2: POST activate, deactivate,<br/>3: POST publish, unpublish,<br/>diagram 15)"| N8N
+    AFS -->|"push, archive, delete,<br/>activate, deactivate<br/>(n8nVersion 2: POST activate, deactivate,<br/>3: POST publish, unpublish,<br/>diagram 15). Refuses up front<br/>without an n8n client when a workflow<br/>or credential row is pending"| N8N
     AFS -->|"upsertLive, putLive"| LIVE
     AFS -->|"putDefinitions"| DEFS
     AFS -->|"createSnapshot +<br/>markActive"| VERS
@@ -91,7 +91,7 @@ Credentials and prompts are planned differently (diagrams 5 and 12).
 
 ```mermaid
 flowchart TD
-    PAS["planAgainstServer"] --> DES["desired =<br/>buildDocs(workflows)"]
+    PAS["planAgainstServer"] --> DES["desired = buildDocs(workflows,<br/>codeByNode): src/unit code<br/>inlined as apply pushes it"]
     PAS --> SRV["server = workflow.pullFromServer<br/>listWorkflows. localId =<br/>meta.n8cLocalId, else the env<br/>mapping, else a new UUID"]
     PAS --> CM["credMap = credIdMap(<br/>credential definitions)"]
     DES --> HAS{"server body with<br/>the same localId?"}
@@ -127,22 +127,27 @@ flowchart TD
 - `checksum()` sorts keys and drops `id`, `createdAt`, `updatedAt` and `versionId` at every depth, so a
   binding compared under `id` would vanish. That is why `normalizeCredentials` emits `credentialId`.
 - `diffNodes` compares the normalized bodies; `diffPushedFields` compares the raw ones.
+- `codeByNode` (the built `src/{unit}` code, diagram 11) is a required argument of `planAgainstServer`,
+  so the desired body is the one apply pushes: a unit-only edit plans as `changed`, and a deployed unit
+  plans as identical.
 - `plan` prints the reported fields, then the changed node names (`renderChangedParts` in `cli.ts`).
 
-**Source:** `src/engine/plan.ts` (`planAgainstServer`, `planDiff`, `normalizeCredentials`, `diffPushedFields`), `src/engine/apply.ts` (`diffNodes`, `buildDocs`), `src/entities/workflow.ts` (`pullFromServer`, `WRITABLE`, `WRITABLE_SETTINGS`), `src/engine/cred-map.ts` (`credIdMap`), `src/layout.ts` (`stripManagedMarker`), `src/checksum.ts`, `src/engine/state.ts` (`computePlan`, workflows block).
+**Source:** `src/engine/plan.ts` (`planAgainstServer`, `planDiff`, `normalizeCredentials`, `diffPushedFields`), `src/engine/apply.ts` (`diffNodes`, `buildDocs`), `src/entities/workflow.ts` (`pullFromServer`, `WRITABLE`, `WRITABLE_SETTINGS`), `src/engine/cred-map.ts` (`credIdMap`), `src/layout.ts` (`stripManagedMarker`), `src/checksum.ts`, `src/engine/build.ts` (`buildSources`), `src/engine/state.ts` (`computePlan`, workflows block).
 
 ## 3. Apply and destroy
 
 `applyFromState` runs the saved plan row by row: push to n8n first, then commit the DB, so a failed
 push never leaves the DB claiming success. Kinds run in a fixed order, so credentials are mapped before
-the workflows that reference them. A failing row is recorded and the loop continues.
+the workflows that reference them. A failing row is recorded and the loop continues. Rows an earlier
+run of the same saved plan already applied are skipped, and without an n8n client the whole apply is
+refused before it writes anything.
 
 ```mermaid
 stateDiagram-v2
     direction TB
     state "For each kind with non-noop rows, in order: credentials, prompts, promptContents (when enabled), workflows" as Kinds {
         state "Load the kind<br/>desired = desiredByKind (files + codeByNode)<br/>mapping = getDefinitions(env, kind)" as Load
-        state "For each non-noop row" as Rows {
+        state "For each pending row: non-noop, appliedAt not set" as Rows {
             state action <<choice>>
             state "Delete" as Delete {
                 state "Resolve the n8n id<br/>workflows: mapping, else the plan's serverId<br/>credentials: the mapping's id<br/>prompts, promptContents: none" as Resolve
@@ -156,7 +161,7 @@ stateDiagram-v2
                 target --> Archive : live workflow
                 target --> Purge : archived workflow
                 target --> DelCred : mapped credential
-                target --> Forget : no id, or no n8n client
+                target --> Forget : no id
                 Archive --> Forget : done, or 404
                 Purge --> Forget : done, or 404
                 DelCred --> Forget : done, or 404
@@ -168,14 +173,14 @@ stateDiagram-v2
                 state "activateWorkflow or deactivateWorkflow<br/>n8nVersion 2: POST activate or deactivate<br/>n8nVersion 3: POST publish or unpublish" as SetActive
                 state "upsertLive(kind, doc)" as Commit
                 [*] --> serverKind
-                serverKind --> Push : workflows or credentials, n8n client set
-                serverKind --> Commit : DB-only kind, or no n8n client
+                serverKind --> Push : workflows or credentials
+                serverKind --> Commit : DB-only kind
                 Push --> SetActive : workflow row with setActive
                 Push --> Commit : otherwise
                 SetActive --> Commit
                 Commit --> [*]
             }
-            state "row ok" as Ok
+            state "row ok, appliedAt stamped on the plan row" as Ok
             state "row failed, error recorded" as Failed
             [*] --> action
             action --> Delete : delete
@@ -197,12 +202,17 @@ stateDiagram-v2
         saved --> [*] : no row succeeded
         SaveDefs --> [*]
     }
+    state clientCheck <<choice>>
+    state "throws: apply needs an n8n connection<br/>nothing applied, nothing written" as Refused
     state anyChange <<choice>>
     state "One release: each kind with live docs<br/>createSnapshot(generation) + markActive" as Release
     state "CLI: refreshedServerFacts" as Refresh
     state "writeState<br/>applied result + fresh baseline" as Saved
     state "writeState<br/>no baseline, serverListed false" as Blind
-    [*] --> Kinds : applyFromState
+    [*] --> clientCheck : applyFromState
+    clientCheck --> Refused : no n8n client, and a pending workflow or credential row
+    clientCheck --> Kinds : otherwise
+    Refused --> [*]
     Kinds --> anyChange
     anyChange --> Release : something changed
     anyChange --> Refresh : nothing changed
@@ -220,8 +230,19 @@ stateDiagram-v2
 - Credentials are deleted permanently in one round; prompts and prompt-contents only leave the DB.
 - The refresh and `writeState` steps belong to the CLI (`apply`, and `restore --apply`); `apply` exits 1
   when any row failed.
+- Without an n8n client (for example `N8N_BASE` unset when applying a plan saved with it) `applyFromState`
+  throws before any write, naming the number of workflow and credential changes it could not deploy.
+  Prompts, noop rows and rows an earlier attempt applied do not need a client, so they do not block.
+  Skipping the pushes while still committing live docs, mappings and a release would record a deploy
+  that never happened.
+- A saved plan applies each row at most once. A successful row is stamped `appliedAt`, and the CLI writes
+  the state back, so running `apply` again after a partial failure skips the stamped rows (the CLI prints
+  how many) and redoes only the failed or unreached ones. That is how a retry avoids re-creating a
+  credential: a `create` POSTs again even when the first attempt's mapping exists, and a workflow would
+  be re-PUT and republished. The drift gate (diagram 9) still checks the stamped rows' entities, so a
+  retry stops if one of them changed on n8n since.
 
-**Source:** `src/engine/apply-state.ts` (`applyFromState`), `src/engine/state.ts` (`activeKinds`, `desiredByKind`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
+**Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 
 ## 4. Credential secrets
 
@@ -566,7 +587,7 @@ sequenceDiagram
         Note over CLI: stop or block: print the reason,<br/>exit 1, apply nothing
     end
     CLI->>SF: writeState(state)
-    CLI->>CLI: applyFromState,<br/>may fail partially
+    CLI->>CLI: applyFromState, may fail partially,<br/>skips rows already applied,<br/>refuses at once without an n8n client
     CLI->>V: refreshedServerFacts
     V->>N: listWorkflows, listCredentials
     V-->>CLI: fresh facts, or<br/>undefined on any error
@@ -574,7 +595,9 @@ sequenceDiagram
 ```
 
 The baseline is refreshed after every apply, even a partial one, so a retry does not see this apply's
-own writes as drift. `apply --force` plans fresh and skips the gate.
+own writes as drift. `apply --force` plans fresh and skips the gate. The retry skips the rows that
+attempt already applied (diagram 3), but the gate still compares their entities with the refreshed
+baseline.
 
 **Source:** `src/engine/state.ts` (`computePlan`), `src/engine/verify.ts` (`readServerFacts`, `verifyBeforeApply`, `touchedFromState`, `driftFor`, `refreshedServerFacts`), `src/cli.ts` (plan and apply handlers).
 
@@ -660,10 +683,11 @@ flowchart TD
     BOUT -->|"readEntity:<br/>codeByNode[nodeId] wins"| PARAM
 ```
 
-- `codeByNode` reaches `readEntity` only through `desiredBundleChecksum` and `applyFromState`, and only
-  exploded workflows apply it. `planAgainstServer` builds workflow docs without it, and the
-  `buildSources` result inside `computePlan` is unused, so the workflow diff does not see a change that
-  lives only in a `src/{unit}`.
+- `codeByNode` reaches `readEntity` (through `buildDocs`) from three places: `computePlan` passes it to
+  `planAgainstServer`, so the workflow diff sees a change that lives only in a `src/{unit}`;
+  `desiredBundleChecksum` uses it for the staleness check; `applyFromState` uses it for the push. Each
+  calls `buildSources` itself, so all three see the same inlined code. Only exploded workflows apply
+  it, and `validateAll` does not see it.
 - "Real code" means something other than comments and whitespace remains.
 
 **Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `resolveDep`, `transformHelper`, `transformEntry`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).

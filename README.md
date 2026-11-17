@@ -188,6 +188,10 @@ The **SQLite** backend keeps the same data in four fixed tables in its single fi
 
 `apply` executes the frozen plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan (files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one step, Terraform-style.
 
+Code-node units under `src/<unit>` are inlined into their target nodes *before* the diff, so `plan` shows exactly the code `apply` will push — an edit that lives only in a unit still plans as a changed workflow.
+
+`apply` needs an n8n connection (`N8N_BASE` + `N8N_API_KEY`) whenever the plan changes a workflow or credential: without one it stops before writing anything, rather than recording a release that was never deployed. If an `apply` fails partway, re-run it on the same saved plan: rows it already applied are skipped (a credential is never created twice), and only the failed or unreached ones run again.
+
 - **Workflow `active` state is managed** — pulled, diffed, and reached via n8n's
   `activate` / `deactivate` endpoints with `"n8nVersion": "2"`, or `publish` / `unpublish` with `"3"`
   (see [n8n versions](#n8n-versions)).
