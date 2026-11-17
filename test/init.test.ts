@@ -22,6 +22,7 @@ test('initProject scaffolds config, dirs, env template, gitignore', () => {
     assert.doesNotMatch(gi, /^n8c\/$/m, 'n8c/ is committed, not ignored');
     assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"database":\s*"sqlite"/);
     assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"file":\s*"n8c\.sqlite"/);
+    assert.equal(JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8')).n8nVersion, '3');
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 

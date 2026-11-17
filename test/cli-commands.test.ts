@@ -1026,3 +1026,8 @@ test('importing the CLI module never runs main (no argv[1], or an argv[1] that d
   const badArg = execFileSync('node', ['--input-type=module', '-e', code, join(cwd, 'does-not-exist')], { cwd, encoding: 'utf8' });
   assert.equal(badArg.trim(), 'imported function', 'unresolvable argv[1]: not the entry point');
 });
+
+test('invalid n8nVersion fails a DB-only command (list) at context build', async () => {
+  writeFileSync(join(cwd, 'n8c.config.json'), JSON.stringify({ n8nVersion: '1' }));
+  await assert.rejects(runCli(['list']), /unsupported n8nVersion "1" — n8c supports n8n 2 and 3/);
+});
