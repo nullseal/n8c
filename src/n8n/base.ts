@@ -58,7 +58,6 @@ export abstract class N8nClientBase {
     return this.reqAll(this.projectId ? `/api/v1/workflows?projectId=${encodeURIComponent(this.projectId)}` : '/api/v1/workflows');
   }
   async updateWorkflow(id: string, body: unknown): Promise<any> { return this.req('PUT', `/api/v1/workflows/${id}`, body); }
-  async transferWorkflow(id: string, destinationProjectId: string): Promise<any> { return this.req('PUT', `/api/v1/workflows/${id}/transfer`, { destinationProjectId }); }
   async deleteWorkflow(id: string): Promise<any> { return this.req('DELETE', `/api/v1/workflows/${id}`); }
   async archiveWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/archive`); }
 

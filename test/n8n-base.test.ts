@@ -74,7 +74,6 @@ test('workflow verbs and paths', async () => {
   await client.activateWorkflow('1');
   await client.deactivateWorkflow('1');
   await client.archiveWorkflow('1');
-  await client.transferWorkflow('1', 'DEST');
   const b = 'https://n8n.test/api/v1/workflows';
   assert.deepEqual(calls, [
     ['POST', b, { name: 'w' }],
@@ -83,7 +82,6 @@ test('workflow verbs and paths', async () => {
     ['POST', `${b}/1/activate`, undefined],
     ['POST', `${b}/1/deactivate`, undefined],
     ['POST', `${b}/1/archive`, undefined],
-    ['PUT', `${b}/1/transfer`, { destinationProjectId: 'DEST' }],
   ]);
 });
 

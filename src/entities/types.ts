@@ -2,7 +2,7 @@ export interface EntityContext {
   env: string;
   encryptionKey?: string;
   encrypted: boolean;
-  n8n?: import('../n8n.ts').N8nClient;
+  n8n?: import('../n8n/index.ts').N8nClient;
   getDefinitions(kind: string): Promise<Record<string, unknown>>;
   // Whether the active store serves the runtime prompt-content collection
   // (Mongo only). Undefined is treated as enabled for backward compatibility.

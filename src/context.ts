@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStore } from './store/factory.ts';
-import { N8nClient } from './n8n.ts';
+import { createN8nClient } from './n8n/index.ts';
 import { loadEnv } from './env.ts';
 import { entityByKind } from './entities/index.ts';
 import type { EntityContext } from './entities/types.ts';
@@ -23,7 +23,7 @@ export async function buildContext(cwd: string, kind: string, envFlag?: string) 
   const root = join(cwd, config.root ?? 'n8c');
   const desc = entityByKind[kind];
   const store = await createStore(config.database ?? 'sqlite', vars, { collectionPrefix: config.collectionPrefix, collections: config.collections, sqlite: config.sqlite });
-  const n8n = vars.N8N_BASE ? new N8nClient(vars.N8N_BASE, vars.N8N_API_KEY ?? '', undefined, config.n8nProjectId || undefined) : undefined;
+  const n8n = vars.N8N_BASE ? createN8nClient('3', vars.N8N_BASE, vars.N8N_API_KEY ?? '', undefined, config.n8nProjectId || undefined) : undefined;
   const ctx: EntityContext = {
     env,
     encrypted: config.credentials?.encrypted !== false,
