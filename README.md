@@ -526,6 +526,13 @@ type stripping:
 - **Node 22.6 – 22.17** — works only with the `--experimental-strip-types` flag.
 - **Node < 22.6** — not supported.
 
+## Architecture
+
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) maps n8c's logic as mermaid diagrams: plan/apply,
+destroy, the drift gate, credentials, storage, layouts, versions, prompts, pull and the MCP server.
+The diagrams are maintained with the code: a change to a flow shown there updates its diagram in the
+same PR (the same rule as the coverage gate).
+
 ## Development
 
 n8c runs its own TypeScript sources directly in dev — no build needed:
