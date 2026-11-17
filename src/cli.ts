@@ -360,6 +360,10 @@ export function buildProgram(): Command {
           if (await desiredBundleChecksum(root, ctx) !== state.desiredChecksum) throw new Error('files changed since plan; re-run `n8c plan` (or `n8c apply --force`)');
         }
         printPlanSummary(state); // show what will be applied (with ids) — for a saved plan too, not only --force
+        // A retry of a partially-applied plan: the summary above still lists the rows
+        // an earlier attempt carried out, but they are stamped and will be skipped.
+        const resumed = state.resources.filter((r) => r.appliedAt).length;
+        if (resumed) console.log(notice(`! resuming this plan — skipping ${resumed} change(s) an earlier attempt already applied`));
 
         // Guard against a stale plan: the files are checked via desiredChecksum, but the
         // INSTANCE can move too (someone edits a workflow in the n8n UI, deletes a

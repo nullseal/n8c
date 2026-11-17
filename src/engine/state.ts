@@ -26,6 +26,10 @@ export interface Resource {
   // its mapping was dropped by an earlier destroy), and then `localId` is a UUID
   // invented for this run — this is the only handle apply can delete by.
   serverId?: string;
+  // Stamped with `applied.at` once apply has carried this row out. A later apply of
+  // the same saved plan skips stamped rows, so retrying after a partial failure
+  // re-runs only what failed or was never reached — never a create that succeeded.
+  appliedAt?: string;
 }
 // An entity that still exists in the DB / on n8n but has no file — planned as a
 // delete only with --destroy, otherwise reported so `plan` never hides it.
