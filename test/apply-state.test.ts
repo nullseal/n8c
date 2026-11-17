@@ -64,6 +64,11 @@ async function startFake() {
         Object.assign(c, { name: body.name, type: body.type, updatedAt: stamp() });
         return send(200, c);
       }
+      if (method === 'DELETE' && url.startsWith('/api/v1/credentials/')) {
+        const i = credentials.findIndex((x) => x.id === url.split('/').pop());
+        if (i < 0) return send(404, { message: 'credential not found' });
+        return send(200, credentials.splice(i, 1)[0]);
+      }
       return send(404, { message: `fake n8n has no route for ${method} ${url}` });
     });
   });
@@ -255,6 +260,43 @@ test('without an n8n connection, a resumed plan whose remaining rows are DB-only
   assert.deepEqual(done.applied!.ok, ['p1']);
   assert.deepEqual(await store.getLive('credentials'), [], 'the stamped credential row is not run again');
   assert.equal(done.resources[0].appliedAt, earlier, 'an earlier stamp is kept');
+});
+
+// --- the delete path's fallbacks ---------------------------------------------
+
+test('a credential delete resolves a legacy plain-string mapping to its n8n id', async (t) => {
+  const { root, fake, store, ctx } = await setup(t);
+  fake.credentials.push({ id: 'C7', name: 'Old', type: 'httpHeaderAuth', updatedAt: 'T' });
+  await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c2: 'C7' }, s));
+  const state = savedState([{ kind: 'credentials', localId: 'c2', name: 'Old', action: 'delete', fromChecksum: 'x', toChecksum: null }]);
+
+  const done = await applyFromState(store, root, ctx, state);
+  assert.deepEqual(done.applied!.ok, ['c2']);
+  assert.equal(fake.count('DELETE', '/api/v1/credentials/C7'), 1);
+  assert.deepEqual(fake.credentials, []);
+  assert.deepEqual(await store.getDefinitions('default', 'credentials'), {});
+});
+
+test('a prompt delete needs no n8n: it only drops the live doc', async (t) => {
+  const { root, store, offline } = await setup(t);
+  await store.withTransaction((s) => store.putLive('prompts', [{ localId: 'p9', name: 'old', body: { key: 'old', content: 'x' }, checksum: 'x' }], s));
+  const state = savedState([{ kind: 'prompts', localId: 'p9', name: 'old', action: 'delete', fromChecksum: 'x', toChecksum: null }]);
+
+  const done = await applyFromState(store, root, offline, state);
+  assert.deepEqual(done.applied!.ok, ['p9']);
+  assert.deepEqual(await store.getLive('prompts'), []);
+});
+
+test('a credential delete rejected with a non-Error 404 still counts as already gone', async (t) => {
+  const { root, store, ctx } = await setup(t);
+  await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c2: { id: 'C7', name: 'Old' } }, s));
+  const state = savedState([{ kind: 'credentials', localId: 'c2', name: 'Old', action: 'delete', fromChecksum: 'x', toChecksum: null }]);
+  // defensive fallback: a rejection that is a bare string has no .message
+  const n8n = { deleteCredential: async () => { throw 'DELETE /api/v1/credentials/C7 -> 404'; } } as any;
+
+  const done = await applyFromState(store, root, { ...ctx, n8n }, state);
+  assert.deepEqual(done.applied!.ok, ['c2']);
+  assert.deepEqual(await store.getDefinitions('default', 'credentials'), {});
 });
 
 // --- the same two scenarios through the CLI, in-process ----------------------
