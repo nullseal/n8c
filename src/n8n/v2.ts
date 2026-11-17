@@ -1,13 +1,20 @@
 import { N8nClientBase } from './base.ts';
 
-// n8n 2.x: "active" became draft/publish.
+// Every n8n 2.x release, from 2.0. It uses only endpoints all of 2.x serves:
+// POST /activate and /deactivate, and create-then-transfer for a project.
+// (/publish, /unpublish and projectId on create arrived during 2.x: see v3.ts.)
+// 2.x and 3.x share the draft/publish model, so V3 inherits updateWorkflow and
+// listWorkflows from here.
 export class N8nClientV2 extends N8nClientBase {
   async createWorkflow(body: unknown): Promise<{ id: string }> {
-    // 2.x accepts projectId directly on create (no transfer step).
-    return this.req('POST', '/api/v1/workflows', this.projectId ? { ...(body as any), projectId: this.projectId } : body);
+    const created = await this.req('POST', '/api/v1/workflows', body);
+    // Early 2.x ignores projectId on create and puts the workflow in the API key's
+    // personal project, so move it to the configured one.
+    if (this.projectId && created?.id) await this.transferWorkflow(String(created.id), this.projectId);
+    return created;
   }
-  async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/publish`); }
-  async deactivateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/unpublish`); }
+  async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/activate`); }
+  async deactivateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/deactivate`); }
 
   async updateWorkflow(id: string, body: unknown): Promise<any> {
     try {

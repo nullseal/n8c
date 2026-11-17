@@ -74,6 +74,7 @@ test('workflow verbs and paths', async () => {
   await client.activateWorkflow('1');
   await client.deactivateWorkflow('1');
   await client.archiveWorkflow('1');
+  await client.transferWorkflow('1', 'DEST');
   const b = 'https://n8n.test/api/v1/workflows';
   assert.deepEqual(calls, [
     ['POST', b, { name: 'w' }],
@@ -82,7 +83,16 @@ test('workflow verbs and paths', async () => {
     ['POST', `${b}/1/activate`, undefined],
     ['POST', `${b}/1/deactivate`, undefined],
     ['POST', `${b}/1/archive`, undefined],
+    ['PUT', `${b}/1/transfer`, { destinationProjectId: 'DEST' }],
   ]);
+});
+
+test('a 204 No Content reply resolves to undefined instead of failing to parse an empty body', async () => {
+  // n8n answers PUT /workflows/{id}/transfer with 204 and no body. A real fetch
+  // Response rejects .json() on that, so req() must not call it.
+  const fetchImpl = async () => new Response(null, { status: 204 });
+  const client = new TestClient('https://n8n.test', 'K', fetchImpl as any);
+  assert.equal(await client.transferWorkflow('1', 'DEST'), undefined);
 });
 
 test('credential verbs and paths', async () => {
