@@ -86,3 +86,68 @@ test('validateAll ignores a body that sets no name at all', async () => {
     assert.deepEqual(await validateAll(root, ctx(store), store), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+function explodedWithConnections(root: string, connections: any) {
+  const wf = join(root, 'workflows', 'w1');
+  for (const id of ['na', 'nb']) {
+    const nd = join(wf, 'nodes', id);
+    mkdirSync(nd, { recursive: true });
+    writeFileSync(join(nd, 'metadata.json'), JSON.stringify({ name: id, type: 'x', typeVersion: 1, position: [0, 0] }));
+    writeFileSync(join(nd, 'apply.ts'), 'export default {};\n');
+  }
+  writeFileSync(join(wf, 'metadata.json'), JSON.stringify({ name: 'flow', connections }));
+  writeFileSync(join(wf, 'apply.ts'), 'export default {};\n');
+}
+
+test('validateAll flags an unknown connection source and a nested unknown target', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    explodedWithConnections(root, {
+      na: { main: [[{ node: 'ghost', type: 'main', index: 0 }]] },
+      zz: { main: [[{ node: 'nb' }]] },
+    });
+    const store = new MemoryStore();
+    const problems = await validateAll(root, ctx(store), store);
+    assert.deepEqual(problems, [
+      'workflow w1: connection target ghost is not a known node',
+      'workflow w1: connection source zz is not a known node',
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('validateAll accepts valid connections', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    explodedWithConnections(root, { na: { main: [[{ node: 'nb', type: 'main', index: 0 }]] } });
+    const store = new MemoryStore();
+    assert.deepEqual(await validateAll(root, ctx(store), store), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function writeCred(root: string, id: string, applySrc: string) {
+  const dir = join(root, 'credentials', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: 'My Cred' }));
+  writeFileSync(join(dir, 'apply.ts'), applySrc);
+}
+
+test('validateAll flags credential data holding an undefined value (unset variable)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    writeCred(root, 'c1', 'export default { name: "My Cred", type: "t", data: { token: process.env.N8C_TEST_SURELY_UNSET_VAR, ok: "v" } };\n');
+    const store = new MemoryStore();
+    const problems = await validateAll(root, ctx(store), store);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /^credential "My Cred": data\.token is undefined/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('validateAll requires the encryption key when credentials carry data and encryption is on', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    writeCred(root, 'c1', 'export default { name: "My Cred", type: "t", data: { token: "x" } };\n');
+    const store = new MemoryStore();
+    const c = { ...ctx(store), encrypted: true, encryptionKey: undefined };
+    assert.deepEqual(await validateAll(root, c, store), ['N8C_CREDENTIAL_ENCRYPTION_KEY required to encrypt credential data']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

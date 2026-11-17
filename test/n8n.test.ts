@@ -76,3 +76,35 @@ test('no n8nProjectId → no projectId anywhere (backward compatible)', async ()
   await c.createWorkflow({ name: 'W' });
   assert.equal(calls.length, 1, 'no transfer call');
 });
+
+// One test per method: exact HTTP verb + path (+ body where one is sent).
+function recorder() {
+  const calls: any[] = [];
+  const fetchImpl = async (url: string, init: any) => {
+    calls.push({ method: init.method, url, body: init.body ? JSON.parse(init.body) : undefined });
+    return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) } as any;
+  };
+  return { calls, client: new N8nClient('https://n8n.test', 'K', fetchImpl as any) };
+}
+
+for (const [method, verb, path] of [
+  ['deleteWorkflow', 'DELETE', '/api/v1/workflows/W1'],
+  ['activateWorkflow', 'POST', '/api/v1/workflows/W1/activate'],
+  ['deactivateWorkflow', 'POST', '/api/v1/workflows/W1/deactivate'],
+  ['archiveWorkflow', 'POST', '/api/v1/workflows/W1/archive'],
+  ['unarchiveWorkflow', 'POST', '/api/v1/workflows/W1/unarchive'],
+  ['getCredential', 'GET', '/api/v1/credentials/W1'],
+  ['deleteCredential', 'DELETE', '/api/v1/credentials/W1'],
+] as const) {
+  test(`${method} sends ${verb} ${path}`, async () => {
+    const { calls, client } = recorder();
+    await (client as any)[method]('W1');
+    assert.deepEqual(calls, [{ method: verb, url: 'https://n8n.test' + path, body: undefined }]);
+  });
+}
+
+test('updateCredential sends PATCH /credentials/:id with the body', async () => {
+  const { calls, client } = recorder();
+  await client.updateCredential('C9', { name: 'n', data: { a: 1 } });
+  assert.deepEqual(calls, [{ method: 'PATCH', url: 'https://n8n.test/api/v1/credentials/C9', body: { name: 'n', data: { a: 1 } } }]);
+});

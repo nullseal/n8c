@@ -3,7 +3,6 @@
 // NO_COLOR is set — so piped / `--pipe` output stays raw and parseable.
 let enabled = false;
 export function setStyle(on: boolean): void { enabled = on; }
-export function styleEnabled(): boolean { return enabled; }
 
 const RESET = '\x1b[0m';
 function wrap(code: string, s: string): string { return enabled && s ? `${code}${s}${RESET}` : s; }

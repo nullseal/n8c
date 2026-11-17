@@ -86,3 +86,11 @@ test('renderTypesFile: no credential types → open index signature (still compi
   const file = renderTypesFile([]);
   assert.match(file, /\[type: string\]: Record<string, unknown>;/);
 });
+
+test('jsonSchemaToTs: allOf becomes an intersection', () => {
+  assert.equal(jsonSchemaToTs({ allOf: [{ type: 'string' }, { type: 'number' }] }), 'string & number');
+});
+
+test('jsonSchemaToTs: a schema with no usable type or properties falls back to Record<string, unknown>', () => {
+  assert.equal(jsonSchemaToTs({ type: 'null' }), 'Record<string, unknown>');
+});

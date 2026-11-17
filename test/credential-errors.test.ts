@@ -280,3 +280,12 @@ test('a non-404 delete error still fails loudly', async () => {
   assert.equal(done.applied!.failed.length, 1, '403 is a real failure');
   assert.match(done.applied!.failed[0].error, /403/);
 });
+
+test('sendWithSchemaDefaults gives up with ok:false when every try is rejected again', async () => {
+  const { sendWithSchemaDefaults } = await import('../src/entities/credential.ts');
+  let tries = 0;
+  const send = async () => { tries += 1; throw new Error('data requires property "allowedDomains"'); };
+  const r = await sendWithSchemaDefaults({ env: 't' } as any, 'httpHeaderAuth', { a: 1 }, send, 2);
+  assert.equal(tries, 2);
+  assert.deepEqual(r, { ok: false, filled: ['allowedDomains'], missing: ['allowedDomains'] });
+});

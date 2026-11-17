@@ -57,17 +57,6 @@ export function jsonSchemaToTs(schema: any, depth = 0): string {
   return 'Record<string, unknown>';
 }
 
-// Field names a credential type's `data` MUST carry. n8n validates the full schema
-// even on a partial PATCH, so a data object missing any of these is rejected.
-// `oneOf`/`anyOf` are alternatives, not requirements, so they're skipped.
-export function collectRequiredFields(schema: any, depth = 0): string[] {
-  if (!schema || typeof schema !== 'object' || depth > 4) return [];
-  const out: string[] = [];
-  if (Array.isArray(schema.required)) for (const r of schema.required) if (typeof r === 'string') out.push(r);
-  if (Array.isArray(schema.allOf)) for (const s of schema.allOf) out.push(...collectRequiredFields(s, depth + 1));
-  return [...new Set(out)];
-}
-
 // Default values n8n declares for a credential type's fields — the same ones its UI
 // uses to prefill the form. n8n validates the WHOLE schema on every write and never
 // returns credential data, so these defaults are the only way to complete a partial

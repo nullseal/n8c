@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redact, setDebug, debugEnabled } from '../src/debug.ts';
+import { redact, setDebug, debugEnabled, debugRequest, debugResponse } from '../src/debug.ts';
 import { buildProgram } from '../src/cli.ts';
 
 test('redact masks every value under `data` but KEEPS the key names', () => {
@@ -43,4 +43,52 @@ test('setDebug toggles the flag', () => {
 
 test('--debug is a global flag', () => {
   assert.ok(buildProgram().options.some((o) => o.long === '--debug'));
+});
+
+function captureStderr(fn: () => void): string[] {
+  const lines: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { lines.push(a.join(' ')); };
+  setDebug(true);
+  try { fn(); } finally { console.error = orig; setDebug(false); }
+  return lines;
+}
+
+test('debugRequest truncates a body longer than MAX_BODY and reports the remainder', () => {
+  const lines = captureStderr(() => debugRequest('POST', '/x', { blob: 'a'.repeat(3000) }));
+  assert.match(lines[0], /POST \/x/);
+  assert.match(lines[1], /… \(\d+ more chars\)$/);
+});
+
+test('debugRequest prints a short body in full', () => {
+  const lines = captureStderr(() => debugRequest('POST', '/x', { a: 1 }));
+  assert.match(lines[1], /"a": 1/);
+  assert.doesNotMatch(lines[1], /more chars/);
+});
+
+test('debugRequest falls back to String(body) for an unserializable body', () => {
+  const circ: any = {}; circ.self = circ;
+  const lines = captureStderr(() => debugRequest('PUT', '/c', circ));
+  assert.match(lines[1], /\[object Object\]/);
+});
+
+test('debugRequest prints an empty body line when the body serializes to undefined', () => {
+  const lines = captureStderr(() => debugRequest('PUT', '/c', () => 1));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[1], '');
+});
+
+test('debugResponse truncates long text with an ellipsis and prints status only when no text', () => {
+  const long = captureStderr(() => debugResponse(500, 'x'.repeat(2500)));
+  assert.match(long[0], /← 500 x+…$/);
+  assert.equal(long[0].length, '← 500 '.length + 2000 + 1);
+  assert.deepEqual(captureStderr(() => debugResponse(200)), ['← 200']);
+});
+
+test('debug output is silent while disabled', () => {
+  const lines: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { lines.push(a.join(' ')); };
+  try { debugRequest('GET', '/x', {}); debugResponse(200, 'ok'); } finally { console.error = orig; }
+  assert.deepEqual(lines, []);
 });

@@ -768,3 +768,18 @@ test('applyFromState does NOT commit the live doc when the n8n push throws', asy
     assert.equal((await store.getLive('workflows')).length, 0, 'live NOT committed on push failure');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('computePlan rejects with a bulleted list when validation fails', async () => {
+  const { root, nroot } = scaffold();
+  try {
+    const dir = join(nroot, 'workflows', 'w1'); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: 'meta name' }));
+    writeFileSync(join(dir, 'apply.ts'), "export default { name: 'body name', nodes: [], connections: {} };\n");
+    const store = new MemoryStore();
+    const ctx = { env: 'test', encrypted: false, getDefinitions: (k: string) => store.getDefinitions('test', k) } as any;
+    await assert.rejects(
+      () => computePlan(store, nroot, ctx, { destroy: false, version: '0.0.0' }),
+      (e: any) => /^validation failed \(1\):\n {2}• workflow w1: name mismatch/.test(e.message),
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

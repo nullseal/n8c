@@ -198,3 +198,29 @@ test('end-to-end: closing stdin right after a tools/call line still yields its r
     if (child.exitCode === null) child.kill();
   }
 });
+
+test('spawnCliRunner resolves { ok: false } with the error text when the child cannot be spawned', async () => {
+  const realExec = process.execPath;
+  (process as any).execPath = '/nonexistent/node-binary';
+  try {
+    const res = await spawnCliRunner('whatever.js')([]);
+    assert.equal(res.ok, false);
+    assert.match(res.text, /ENOENT/);
+  } finally { (process as any).execPath = realExec; }
+});
+
+test('makeLineHandler survives a throwing stdout write — the next message is still processed', async () => {
+  let calls = 0;
+  const run: ToolRunner = async () => { calls += 1; return { text: 'ok', ok: true }; };
+  const line = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } });
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  let writes = 0;
+  process.stdout.write = (function () { writes += 1; if (writes === 1) throw new Error('EPIPE'); return true; }) as typeof process.stdout.write;
+  try {
+    const enqueue = makeLineHandler(run, '0.3.0');
+    await enqueue(line); // write throws → swallowed by the queue's catch
+    await enqueue(line);
+  } finally { process.stdout.write = originalWrite; }
+  assert.equal(calls, 2);
+  assert.equal(writes, 2, 'second message reached stdout');
+});
