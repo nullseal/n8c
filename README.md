@@ -19,7 +19,7 @@ n8c pull        # snapshot your live n8n → versioned files + DB history
 # let an AI (or a teammate) edit the files…
 n8c plan        # see exactly what will change vs live — no surprises
 n8c apply       # deploy; every apply is a restorable release
-n8c restore <release>   # something broke? roll the whole instance back in one command
+n8c restore <release> --apply   # something broke? roll the whole instance back in one command
 ```
 
 Dependency-light and zero setup: history goes into a single **SQLite** file by default (Node's
@@ -34,16 +34,17 @@ built-in `node:sqlite` — no service to run), so the only runtime dependency yo
 **A safety net for AI-driven automation.** When you let an AI agent loose on your n8n instance, one
 bad edit can quietly cost you hours — and hunting through per-workflow history to piece the old state
 back together is its own headache. n8c snapshots *every* change and ties each `apply` into a single
-coherent **release**, so `n8c restore <release>` returns your whole instance — workflows, prompts and
-credentials together — to a point you know was good.
+coherent **release**, so `n8c restore <release> --apply` returns your whole instance — workflows,
+prompts and credentials together — to a point you know was good.
 
-**Secrets your AI never sees.** Credential values live only in your `.env` and are resolved from
-`process.env` at deploy time — never written to a file, never committed to git, never sitting in the
-directory an AI agent is working in. All that lives in code is a reference like
+**Secrets your AI never sees.** Credential values come from your `.env` and are resolved from
+`process.env` at deploy time — never written to an entity file, never committed to git, never sitting
+in the directory an AI agent is working in. All that lives in code is a reference like
 `process.env.MY_TOKEN`. The agent can edit your automation without ever touching a real key.
 
 **Encrypted at rest.** Before a credential is stored in the database it's encrypted with AES-256-GCM
-(`N8C_CREDENTIAL_ENCRYPTION_KEY`) — never persisted in plaintext.
+(`N8C_CREDENTIAL_ENCRYPTION_KEY`) — never persisted in plaintext unless you opt out with
+`credentials.encrypted: false`.
 
 **Build on staging, ship to prod — the same files.** Entities are identified by env-neutral IDs, and
 n8c **auto-maps** each environment's real n8n and credential IDs for you. Develop and test against
@@ -120,10 +121,11 @@ n8n ID is resolved from the DB mapping at push time, so the same files deploy an
 
 ### Typed authoring
 
-`n8c types` (also run automatically by `pull`) generates **`n8c/n8c.types.ts`** so your editor knows
-each entity's shape — and, crucially, each credential's **real `data` field names**, fetched from your
-instance via n8n's `GET /credentials/schema/{type}`. Since n8n never returns credential data, this is
-the only way to know them; without it a wrong key is only discovered as a 400 at apply time.
+`n8c types` (also run automatically by `pull`, except with `--no-export`) generates
+**`n8c/n8c.types.ts`** so your editor knows each entity's shape — and, crucially, each credential's
+**real `data` field names**, fetched from your instance via n8n's `GET /credentials/schema/{type}`.
+Since n8n never returns credential data, this is the only way to know them; without it a wrong key
+is only discovered as a 400 at apply time.
 
 ```ts
 import type { Credential } from '../../n8c.types.ts';
@@ -147,7 +149,9 @@ type-checks. That shim is conditional on purpose: declaring it alongside `@types
 
 ### Two prompt kinds
 
-- **`prompts`** — build-time prompts wired into agent / LLM nodes at deploy.
+- **`prompts`** — build-time prompts: the system / user prompts of your agent / LLM nodes, extracted
+  by `pull` and versioned as entities of their own. They're **DB-only**: `apply` records them but
+  never writes them into nodes — n8n runs the prompt in the workflow's own node, so change it there.
 - **`prompt-contents`** — a **runtime** prompt store your workflow reads from the DB at execution
   time. It's a normal managed entity but **DB-only**: `plan` / `apply` never push it to n8n. Its live
   docs are stored flat (`{ key, content | blocks, mode: "live" }`) so a node can read
@@ -155,7 +159,7 @@ type-checks. That shim is conditional on purpose: declaring it alongside `@types
 
 ### Database collections
 
-All collections default to `n8c_<name>` and are fully renameable:
+On **MongoDB**, all collections default to `n8c_<name>` and are fully renameable:
 
 | Collection             | Holds |
 |------------------------|-------|
@@ -175,6 +179,9 @@ Override the prefix or any single name in `n8c.config.json`:
 }
 ```
 
+The **SQLite** backend keeps the same data in four fixed tables in its single file (`live`,
+`versions`, `manifests`, `definitions`) and ignores `collectionPrefix` / `collections`.
+
 ### Plan / apply
 
 `plan` computes actions against the **live** state (workflows and credentials diffed against the n8n server, prompts against the DB), freezes them into `.states/n8c.state.<env>.json` — including which credential each workflow node is bound to. If the credential listing fails (an expired API key, or a key without permission), `plan` says so explicitly and falls back to comparing against the local database only.
@@ -186,8 +193,10 @@ Override the prefix or any single name in `n8c.config.json`:
   (see [n8n versions](#n8n-versions)).
 - **Credentials reconcile in place** via `PATCH`, using the server's `updatedAt` as a change token —
   no duplicates; missing-on-server is recreated.
-- **`plan --destroy`** marks workflows that exist on the server but not in your files; `apply`
-  **archives** them (soft, recoverable) rather than hard-deleting.
+- **`plan --destroy`** plans deletes for everything that has no file, not just workflows. `apply`
+  **archives** a live workflow (soft, recoverable) but hard-deletes one that's already archived (see
+  [Archived workflows](#archived-workflows)), **permanently deletes credentials** from n8n, and
+  removes prompts / prompt-contents from the DB's live docs (their history stays).
 
 A workflow is `changed` when any of these differ from the server: a node, the
 `active` flag, the workflow `name`, `connections`, `description`, `nodeGroups`, or a
@@ -291,7 +300,8 @@ the DB only. When it does write:
   active generation, no new one is created (an unchanged re-pull adds nothing).
 - It writes files that **mirror the pulled set exactly**: an entity directory whose id is no longer
   in the pulled set is removed, so orphaned dirs from earlier pulls never linger as phantom
-  "create" entries in `plan`.
+  "create" entries in `plan`. The exception is a kind that pulls **nothing**: its directories are
+  left as they are, so if you emptied a kind on purpose, delete its folder yourself.
 - For node-extracted **prompts** (DB-only, `plan` diffs them against the DB), the pulled set is also
   adopted as the live baseline — otherwise `plan` right after `pull` would show every extracted
   prompt as new. This only writes `n8c_prompts`, never the runtime `prompt-content` registry.
@@ -332,8 +342,9 @@ creates no release (no empty generations).
 
 To prune history, `n8c drop <generation...>` deletes one or more generations — each removes that
 release across every kind at once. Live docs are untouched. The **active** generation can never be
-dropped (it's the deploy / rollback baseline) — make another one active first with `restore` or a new
-`apply`, then drop the old one.
+dropped (it's the deploy / rollback baseline). Only a *new* generation takes its place — an `apply`,
+`restore --apply` or `pull` that changes something creates one — so do that first, then drop the old
+one. A plain `restore` only rewrites files; it never changes which generation is active.
 
 ### Secrets
 
@@ -345,19 +356,24 @@ export default function () {
 }
 ```
 
-The reference (`process.env.MY_TOKEN`) is what lives in files and the DB — never the resolved secret.
-At rest in the DB, credential data is encrypted with `N8C_CREDENTIAL_ENCRYPTION_KEY` (AES-256-GCM).
-Because no secret is ever written to a file, the whole `n8c/` root is safe to commit.
+Files only ever hold the reference (`process.env.MY_TOKEN`); it resolves when n8c reads the file, and
+`apply` stores the **resolved** secret in the DB — encrypted with `N8C_CREDENTIAL_ENCRYPTION_KEY`
+(AES-256-GCM), or in plaintext if you set `credentials.encrypted: false`. Because no secret is ever
+written to an entity file, the whole `n8c/` root is safe to commit.
 
 **Credential `data` is write-only.** n8n marks it `writeOnly` and never returns it — not even
 non-secret fields — so it can't be pulled, and n8n validates the *whole* schema even on a partial
 update. n8c handles that for you:
 
-- A `data` n8n rejects for a missing field is **retried without `data`**, so the rest of the
-  credential still applies and the stored secret is left untouched (rather than failing the apply).
-- **`allowedDomains` defaults to `"*"`** (any domain) when n8n asks for it and your file omits it.
-  Set it explicitly to narrow it — your value is never overwritten. The default is only applied to
-  fields n8n actually reports as missing, so it's never injected into a type that has no such field.
+- A field n8n reports as missing from `data` is **filled from n8n's own default** for it (the value
+  its UI prefills) and sent again. If a field has no default anywhere, an **update** is **retried
+  without `data`**, so the rest of the credential still applies and the stored secret is left
+  untouched (rather than failing the apply). A **create** has no stored secret to keep, so it fails
+  instead, naming the field(s) to add.
+- **`allowedDomains` falls back to `"*"`** (any domain) when n8n asks for it, has no default of its
+  own, and your file omits it. Set it explicitly to narrow it — your value is never overwritten.
+  Defaults are only applied to fields n8n actually reports as missing, so they're never injected
+  into a type that has no such field.
 
 Use `--debug` to see the exact payload (with secrets redacted) if a credential is rejected.
 
@@ -454,7 +470,7 @@ n8c init [--project-only | --db-only] [--agents]   Scaffold config/.env/.gitigno
 n8c pull [--no-export] [-y]             n8n + DB → files (asks before overwriting; -y/--yes skips)
 n8c plan [--destroy]                    Diff files vs live → write .states/n8c.state.<env>.json
 n8c apply [--force] [--destroy] [--no-verify] [-m]    Execute the saved plan (-m/--message notes the release)
-n8c types                               Generate n8c/n8c.types.ts (editor types; also run by pull)
+n8c types                               Generate n8c/n8c.types.ts (editor types; also run by pull unless --no-export)
 n8c list [--full]                       Generation versions (releases), newest first
 n8c create <workflow|prompt|credential|node> [--name --description --type --key --workflow]
 n8c restore <generation> [--apply]      Roll every kind back to a generation version
