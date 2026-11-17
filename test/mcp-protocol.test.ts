@@ -231,3 +231,63 @@ test('makeLineHandler survives a throwing stdout write — the next message is s
   assert.equal(calls, 2);
   assert.deepEqual(ours, [9101, 9102], 'second message reached stdout after the first write threw');
 });
+
+test('handleMessage ignores non-object payloads; initialize without params defaults the protocol version', async () => {
+  assert.equal(await handleMessage(null, okRunner, '0.2.0'), undefined);
+  assert.equal(await handleMessage('ping', okRunner, '0.2.0'), undefined);
+  const init = await handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, okRunner, '0.2.0') as any;
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+});
+
+test('tools/call without an arguments object runs the tool with defaults', async () => {
+  const seen: string[][] = [];
+  const run: ToolRunner = async (argv) => { seen.push(argv); return { text: 'ok', ok: true }; };
+  const res = await handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'n8c_plan' } }, run, '0.2.0') as any;
+  assert.deepEqual(seen, [['plan', '--pipe']]);
+  assert.equal(res.result.content[0].text, 'ok');
+});
+
+test('a thrown non-Error from the runner still comes back as an isError result with its string form', async () => {
+  // defensive fallback: a rejection that is not an Error has no .message
+  const run: ToolRunner = async () => { throw 'plain string failure'; };
+  const res = await handleMessage({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } }, run, '0.2.0') as any;
+  assert.equal(res.result.isError, true);
+  assert.equal(res.result.content[0].text, 'plain string failure');
+});
+
+test('makeLineHandler skips a line that is not JSON and keeps serving', async () => {
+  const order: string[] = [];
+  const run: ToolRunner = async () => { order.push('ran'); return { text: 'ok', ok: true }; };
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const written: string[] = [];
+  process.stdout.write = ((s: string) => { written.push(String(s)); return true; }) as typeof process.stdout.write;
+  try {
+    const enqueue = makeLineHandler(run, '0.3.0');
+    await enqueue('this is not json');
+    await enqueue(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } }));
+  } finally { process.stdout.write = originalWrite; }
+  assert.deepEqual(order, ['ran']);
+  assert.equal(written.length, 1, 'only the valid message produced output');
+});
+
+test('spawnCliRunner reports a non-Error spawn failure by its string form', async () => {
+  // defensive fallback: node always emits Error objects, so stub spawn to emit a bare string
+  const { syncBuiltinESMExports } = await import('node:module');
+  const { EventEmitter } = await import('node:events');
+  const cp: any = (await import('node:child_process')).default;
+  const realSpawn = cp.spawn;
+  cp.spawn = () => {
+    const child: any = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    setImmediate(() => child.emit('error', 'spawn blew up'));
+    return child;
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(await spawnCliRunner('/irrelevant.js')(['plan']), { text: 'spawn blew up', ok: false });
+  } finally {
+    cp.spawn = realSpawn;
+    syncBuiltinESMExports();
+  }
+});
