@@ -364,7 +364,7 @@ Use `--debug` to see the exact payload (with secrets redacted) if a credential i
 
 By default n8c uses the API key's default (personal) project. If your workflows live in a **team
 project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project,
-creates new credentials in it, and transfers newly-created workflows into it.
+creates new workflows and credentials directly in it.
 
 ## n8n versions
 
@@ -378,7 +378,7 @@ included, stops every command with `unsupported n8nVersion "<v>" — n8c support
 n8n 2.x and 3.x replaced "active" with **save vs publish**: saving a workflow stores a version, publishing
 makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes, and
 n8c reads a workflow as active when n8n reports an active version (`activeVersionId`), not the deprecated
-`active` field. Creating a workflow sends the project in the create call, so there is no separate transfer step.
+`active` field. When `n8nProjectId` is set, creating a workflow sends the project in the create call, so there is no separate transfer step.
 
 **API key scope.** Updating a published workflow makes n8n re-publish it, which needs an API key with the
 `workflow:activate` scope. Without it n8n answers 403 but **still keeps the new version as a draft**. n8c then

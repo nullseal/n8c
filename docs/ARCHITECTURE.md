@@ -793,7 +793,7 @@ flowchart TD
     CRE -->|"version 3"| V3["N8nClientV3<br/>extends N8nClientV2,<br/>empty seam"]
     V3 -->|"extends"| V2
     V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>deleteWorkflow, archiveWorkflow,<br/>credential methods"]
-    V2 --> CW["createWorkflow: POST /workflows<br/>with projectId in the body,<br/>no transfer call"]
+    V2 --> CW["createWorkflow: POST /workflows<br/>with projectId in the body<br/>when n8nProjectId is set,<br/>no transfer call"]
     V2 --> AW["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish"]
     V2 --> LW["listWorkflows: when a row has<br/>activeVersionId, active =<br/>activeVersionId is not null"]
     V2 --> UW["updateWorkflow: PUT via base"]
