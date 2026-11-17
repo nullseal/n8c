@@ -182,7 +182,8 @@ Override the prefix or any single name in `n8c.config.json`:
 `apply` executes the frozen plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan (files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one step, Terraform-style.
 
 - **Workflow `active` state is managed** — pulled, diffed, and reached via n8n's
-  `publish` / `unpublish` endpoints on n8n 2.x / 3.x (see [n8n versions](#n8n-versions)).
+  `activate` / `deactivate` endpoints with `"n8nVersion": "2"`, or `publish` / `unpublish` with `"3"`
+  (see [n8n versions](#n8n-versions)).
 - **Credentials reconcile in place** via `PATCH`, using the server's `updatedAt` as a change token —
   no duplicates; missing-on-server is recreated.
 - **`plan --destroy`** marks workflows that exist on the server but not in your files; `apply`
@@ -363,22 +364,35 @@ Use `--debug` to see the exact payload (with secrets redacted) if a credential i
 ### n8n projects
 
 By default n8c uses the API key's default (personal) project. If your workflows live in a **team
-project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project,
-creates new workflows and credentials directly in it.
+project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project
+and creates new credentials directly in it. New workflows end up there too: with `"n8nVersion": "3"` the
+create call names the project; with `"2"` n8c creates the workflow, then transfers it to the project.
 
 ## n8n versions
 
 `n8nVersion` in `n8c.config.json` picks which n8n API n8c speaks: `"2"` or `"3"` (the number `2` / `3` also
 works). It defaults to `"3"` when absent, and `n8c init` writes it explicitly. Any other value, `"1"`
-included, stops every command with `unsupported n8nVersion "<v>" — n8c supports n8n 2 and 3`.
+included, makes these commands stop with `unsupported n8nVersion "<v>" — n8c supports n8n 2 and 3`:
+`plan`, `apply`, `pull`, `list`, `types`, `db export`, `db import`, `restore` and `drop`. `init` and
+`create` never check it, and neither does `mcp` at startup (each MCP tool call runs one of those
+commands, so the call does).
 
-**n8n 1.x is no longer supported.** The one upgrade caveat: an existing repo whose config has no
-`n8nVersion` keeps working as before, against an n8n 2.x or 3.x server (it is read as `"3"`).
+| `n8nVersion` | Use with | Activate / deactivate | New workflow when `n8nProjectId` is set |
+|---|---|---|---|
+| `"2"` | every n8n 2.x release | `POST /workflows/{id}/activate`, `…/deactivate` | `POST /workflows`, then `PUT /workflows/{id}/transfer` to the project |
+| `"3"` (default) | n8n 3.x, and n8n 2.33+ | `POST /workflows/{id}/publish`, `…/unpublish` | `POST /workflows` with `projectId` in the body, no transfer |
+
+**n8n 1.x is no longer supported.** **Upgrading:** a repo pointed at an n8n 2.x server must set
+`"n8nVersion": "2"`. A config without `n8nVersion` is read as `"3"`, which uses endpoints that n8n 2.x
+before 2.33 does not have.
 
 n8n 2.x and 3.x replaced "active" with **save vs publish**: saving a workflow stores a version, publishing
-makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes, and
-n8c reads a workflow as active when n8n reports an active version (`activeVersionId`), not the deprecated
-`active` field. When `n8nProjectId` is set, creating a workflow sends the project in the create call, so there is no separate transfer step.
+makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes
+(through the endpoints in the table), and n8c reads a workflow as active when n8n reports an active version
+(`activeVersionId`), not the deprecated `active` field.
+
+Whatever the setting, `apply` archives a live workflow (after `plan --destroy`) with
+`POST /workflows/{id}/archive`, which n8n's public API only has from 2.15.
 
 **API key permissions.** Updating a published workflow makes n8n re-publish it. When n8n refuses that publish
 with a 403 whose message names `workflow:activate` or `workflow:publish`, it **still keeps the new version as a
@@ -474,7 +488,7 @@ missing field like `allowedDomains`. The API key is never logged.
   "sqlite": { "file": "n8c.sqlite" },
   "root": "n8c",
   "defaultEnv": "default",
-  "n8nVersion": "3",           // "2" or "3" (default "3" when absent); 1.x is not supported
+  "n8nVersion": "3",           // "3" (default when absent): n8n 3.x and 2.33+; "2": any n8n 2.x; no 1.x
   "n8nProjectId": "",          // "" = the API key's default project
   "collectionPrefix": "n8c_",  // collectionPrefix/collections apply to the mongodb backend
   "collections": {
@@ -567,8 +581,9 @@ npm run build         # compile src/ → dist/ (what gets published)
 
 The **published package ships the compiled `dist/`** — Node disables type stripping for files under
 `node_modules`, so the CLI can't run from raw `.ts` once installed. `prepublishOnly` runs the tests
-and the build automatically. The MongoDB adapter and real n8n push are exercised by manual runs
-against a live instance, not by the unit tests.
+and the build automatically. The unit tests cover the MongoDB adapter through an injected fake client
+(`test/mongo-store.test.ts`); a real MongoDB server and a real n8n push are exercised only by manual runs
+against live instances.
 
 ### Testing & coverage
 
@@ -584,8 +599,9 @@ Why branches is 98, not 100:
 
 - The few uncovered branches are defensive fallbacks no caller can reach (e.g. `?.` / `??` on values
   every caller provides).
-- Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by a few
-  hundredths of a percent between identical runs. A 100 gate would fail at random.
+- Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by up to
+  about 0.3 percentage points between identical runs, and single files' branches flip too. A 100 gate
+  would fail at random.
 
 To find what is uncovered, emit an lcov report and look for zero hits:
 

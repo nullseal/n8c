@@ -67,7 +67,7 @@ flowchart TB
     GATE -->|"block or stop"| HALT(["exit 1, nothing applied"])
     GATE -->|"proceed"| AFS["applyFromState"]
     CP -->|"apply --force:<br/>fresh plan, no gate"| AFS
-    AFS -->|"push, archive, delete,<br/>activate, deactivate<br/>(n8n 2.x/3.x: publish, unpublish,<br/>diagram 15)"| N8N
+    AFS -->|"push, archive, delete,<br/>activate, deactivate<br/>(n8nVersion 2: POST activate, deactivate,<br/>3: POST publish, unpublish,<br/>diagram 15)"| N8N
     AFS -->|"upsertLive, putLive"| LIVE
     AFS -->|"putDefinitions"| DEFS
     AFS -->|"createSnapshot +<br/>markActive"| VERS
@@ -165,7 +165,7 @@ stateDiagram-v2
             state "Create or update" as Upsert {
                 state serverKind <<choice>>
                 state "pushToServer(doc, new or changed)<br/>merge the returned ids into mapping" as Push
-                state "activateWorkflow or deactivateWorkflow<br/>(n8n 2.x/3.x: POST publish or unpublish)" as SetActive
+                state "activateWorkflow or deactivateWorkflow<br/>n8nVersion 2: POST activate or deactivate<br/>n8nVersion 3: POST publish or unpublish" as SetActive
                 state "upsertLive(kind, doc)" as Commit
                 [*] --> serverKind
                 serverKind --> Push : workflows or credentials, n8n client set
@@ -221,7 +221,7 @@ stateDiagram-v2
 - The refresh and `writeState` steps belong to the CLI (`apply`, and `restore --apply`); `apply` exits 1
   when any row failed.
 
-**Source:** `src/engine/apply-state.ts` (`applyFromState`), `src/engine/state.ts` (`activeKinds`, `desiredByKind`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`) and `src/n8n/v2.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
+**Source:** `src/engine/apply-state.ts` (`applyFromState`), `src/engine/state.ts` (`activeKinds`, `desiredByKind`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 
 ## 4. Credential secrets
 
@@ -790,22 +790,31 @@ flowchart TD
     RES -->|"anything else, e.g. 1"| ERR(["throws: unsupported n8nVersion,<br/>n8c supports n8n 2 and 3"])
     OKV --> CRE["createN8nClient(version, baseUrl,<br/>apiKey, fetch, projectId)"]
     CRE -->|"version 2"| V2["N8nClientV2"]
-    CRE -->|"version 3"| V3["N8nClientV3<br/>extends N8nClientV2,<br/>empty seam"]
+    CRE -->|"version 3"| V3["N8nClientV3"]
     V3 -->|"extends"| V2
-    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>deleteWorkflow, archiveWorkflow,<br/>credential methods"]
-    V2 --> CW["createWorkflow: POST /workflows<br/>with projectId in the body<br/>when n8nProjectId is set,<br/>no transfer call"]
-    V2 --> AW["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish"]
-    V2 --> LW["listWorkflows: when a row has<br/>activeVersionId, active =<br/>activeVersionId is not null"]
-    V2 --> UW["updateWorkflow: PUT via base"]
+    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>transferWorkflow, deleteWorkflow,<br/>archiveWorkflow, credential methods"]
+    V2 --> CW2["createWorkflow: POST /workflows,<br/>body unchanged, then, when<br/>n8nProjectId is set and n8n<br/>returned an id: transferWorkflow,<br/>PUT /workflows/{id}/transfer"]
+    V2 --> AW2["activateWorkflow: POST activate<br/>deactivateWorkflow: POST deactivate"]
+    V3 --> CW3["createWorkflow, overridden:<br/>POST /workflows with projectId<br/>in the body when n8nProjectId<br/>is set, no transfer call"]
+    V3 --> AW3["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish<br/>(both overridden)"]
+    V2 --> LW["listWorkflows, V3 inherits it:<br/>when a row has activeVersionId,<br/>active = activeVersionId is not null"]
+    V2 --> UW["updateWorkflow, V3 inherits it:<br/>PUT via base"]
     UW --> R{"response"}
     R -->|"ok"| DONE(["updated"])
-    R -->|"403"| DRAFT(["throws: n8n saved the new version<br/>as a DRAFT, the API key needs the<br/>workflow:activate scope"])
-    R -->|"other error"| RETH(["rethrown unchanged"])
+    R -->|"403 whose body names<br/>workflow:activate or<br/>workflow:publish"| DRAFT(["throws: n8n saved the new version<br/>as a DRAFT, with the recovery steps,<br/>status 403, cause = the original error"])
+    R -->|"any other 403,<br/>any other error"| RETH(["rethrows the same<br/>error object"])
 ```
 
-- A PUT on a published workflow makes 2.x/3.x re-publish it. Without the `workflow:activate` scope n8n answers 403
-  but still keeps the new version as a draft, so the error says that, instead of a bare failure.
+- `/publish`, `/unpublish` and `projectId` on create only arrived during 2.x (publish and unpublish in 2.33), so
+  `N8nClientV2` activates, deactivates and assigns a project through `/activate`, `/deactivate` and `/transfer`,
+  which all of 2.x serves. `N8nClientV3` overrides `createWorkflow`, `activateWorkflow` and `deactivateWorkflow`
+  for n8n 3.x; the endpoints it uses also exist from 2.33.
+- n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.
+- A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
+  `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and
+  how to recover: grant the permission and re-run `n8c apply` on the same saved plan (a fresh `n8c plan` compares
+  against the saved draft and shows no change), or set `active: false` in the workflow's file. Any other 403 (for
+  example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
-- `N8nClientV3` adds nothing today; it is the place to diverge from 2.x when 3.x does.
 
-**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
+**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).

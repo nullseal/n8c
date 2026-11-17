@@ -15,8 +15,9 @@ export interface Resource {
   kind: string; localId: string; name: string; action: Action;
   fromChecksum: string | null; toChecksum: string | null;
   nodes?: { name: string; status: string }[];
-  // Fields outside `nodes` that a push would change (name, connections, settings.*,
-  // description, staticData). Display only — apply pushes the whole body.
+  // Fields outside `nodes` that a push would change (name, description, connections,
+  // settings.*, nodeGroups; never staticData, which diffPushedFields skips). Display
+  // only — apply pushes the whole body.
   fields?: string[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
   archived?: boolean;  // a delete of an already-archived workflow → hard delete, not archive
