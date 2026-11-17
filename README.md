@@ -541,6 +541,32 @@ The **published package ships the compiled `dist/`** — Node disables type stri
 and the build automatically. The MongoDB adapter and real n8n push are exercised by manual runs
 against a live instance, not by the unit tests.
 
+### Testing & coverage
+
+```bash
+npm test             # run the suite
+npm run test:cov     # same, with coverage — FAILS below lines 100 / functions 100 / branches 98
+```
+
+`prepublishOnly` runs `npm run test:cov` before the build, so a release can't ship under the gate.
+**Rule: every change keeps `npm run test:cov` green — new code ships with tests.**
+
+Why branches is 98, not 100:
+
+- The few uncovered branches are defensive fallbacks no caller can reach (e.g. `?.` / `??` on values
+  every caller provides).
+- Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by a few
+  hundredths of a percent between identical runs. A 100 gate would fail at random.
+
+To find what is uncovered, emit an lcov report and look for zero hits:
+
+```bash
+node --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' \
+  --test-reporter=lcov --test-reporter-destination=lcov.info
+grep -B8 'FNDA:0,' lcov.info    # uncovered functions (FN lines carry the names)
+grep -E '^(SF|BRDA:[0-9]+,[0-9]+,[0-9]+,(0|-))' lcov.info   # uncovered branches per file
+```
+
 ## License
 
 [MIT](LICENSE) © ltmin
