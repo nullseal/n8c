@@ -253,7 +253,8 @@ test('plan reports orphans and renamed workflow fields; --destroy flag accepted'
   assert.match(cap.text(), /no longer has a file/);
   cap.out.length = 0;
   await runCli(['plan', '--destroy']);
-  assert.match(cap.text(), /to destroy\./);
+  // the server-only workflow W1 is the one delete
+  assert.match(cap.text(), /Plan: 0 to create, 0 to update, 1 to destroy\./);
   assert.ok(fake.calls.some((c) => c.method === 'GET' && c.url.startsWith('/api/v1/workflows')));
 });
 
@@ -1013,17 +1014,21 @@ test('restore --apply warns when the post-apply baseline cannot be refreshed', a
 });
 
 // ---- entry-point detection (subprocess: the module is loaded fresh)
+// Spawn the node binary running this suite (not whatever `node` is first on PATH),
+// with a timeout so a hung child fails its test instead of stalling the run.
+const SPAWN_TIMEOUT_MS = 30_000;
+
 test('running the CLI with no command prints help and exits 0', () => {
-  const out = execFileSync('node', [CLI_SRC], { cwd, encoding: 'utf8' });
+  const out = execFileSync(process.execPath, [CLI_SRC], { cwd, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
   assert.match(out, /Usage: n8c/);
   assert.match(out, /Commands:/);
 });
 
 test('importing the CLI module never runs main (no argv[1], or an argv[1] that does not resolve)', () => {
   const code = `const m = await import(${JSON.stringify(pathToFileURL(CLI_SRC).href)}); console.log('imported', typeof m.buildProgram);`;
-  const noArg = execFileSync('node', ['--input-type=module', '-e', code], { cwd, encoding: 'utf8' });
+  const noArg = execFileSync(process.execPath, ['--input-type=module', '-e', code], { cwd, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
   assert.equal(noArg.trim(), 'imported function', 'no argv[1]: not the entry point, no help printed');
-  const badArg = execFileSync('node', ['--input-type=module', '-e', code, join(cwd, 'does-not-exist')], { cwd, encoding: 'utf8' });
+  const badArg = execFileSync(process.execPath, ['--input-type=module', '-e', code, join(cwd, 'does-not-exist')], { cwd, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
   assert.equal(badArg.trim(), 'imported function', 'unresolvable argv[1]: not the entry point');
 });
 

@@ -259,15 +259,23 @@ test('makeLineHandler skips a line that is not JSON and keeps serving', async ()
   const order: string[] = [];
   const run: ToolRunner = async () => { order.push('ran'); return { text: 'ok', ok: true }; };
   const originalWrite = process.stdout.write.bind(process.stdout);
-  const written: string[] = [];
-  process.stdout.write = ((s: string) => { written.push(String(s)); return true; }) as typeof process.stdout.write;
+  // Only count this test's own JSON-RPC replies: id 9201, or the null id a
+  // parse-error reply to the bad line would carry. Every other stdout write (the
+  // test runner's own output can interleave) passes through untouched.
+  const ours: (number | null)[] = [];
+  process.stdout.write = (function (chunk: unknown, ...rest: unknown[]) {
+    const m = /"id":(9201|null)\b/.exec(String(chunk));
+    if (!m) return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    ours.push(m[1] === 'null' ? null : Number(m[1]));
+    return true;
+  }) as typeof process.stdout.write;
   try {
     const enqueue = makeLineHandler(run, '0.3.0');
     await enqueue('this is not json');
-    await enqueue(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } }));
+    await enqueue(JSON.stringify({ jsonrpc: '2.0', id: 9201, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } }));
   } finally { process.stdout.write = originalWrite; }
   assert.deepEqual(order, ['ran']);
-  assert.equal(written.length, 1, 'only the valid message produced output');
+  assert.deepEqual(ours, [9201], 'only the valid message produced a reply');
 });
 
 test('spawnCliRunner reports a non-Error spawn failure by its string form', async () => {
