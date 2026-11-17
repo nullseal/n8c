@@ -5,8 +5,13 @@ import rlp from 'node:readline/promises';
 import { chmodSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import fsMod from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer } from 'node:http';
-import { buildProgram } from '../src/cli.ts';
+import { MongoClient } from 'mongodb';
+import { buildProgram, renderPlanIgnored, renderPlanOrphans, renderGeneration, groupByGeneration, resolveGenerationRef } from '../src/cli.ts';
+import { setStyle } from '../src/style.ts';
 import { createStore } from '../src/store/factory.ts';
 import { SqliteStore } from '../src/store/sqlite.ts';
 
@@ -751,4 +756,273 @@ test('unknown command sets exitCode 1', async (t) => {
   assert.equal(process.exitCode, 1);
   assert.match(cap.errText(), /unknown command 'nope'/);
   assert.match(w.mock.calls.map((c) => String(c.arguments[0])).join(''), /Usage: n8c/);
+});
+
+// ================================================================ branch sweep
+
+const CLI_SRC = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+
+// ---- pure renderers: plural wording and unknown-kind fallbacks
+test('renderPlanIgnored: plural wording and unknown kinds fall back to the raw kind', () => {
+  setStyle(false);
+  const out = renderPlanIgnored([{ kind: 'weird', localId: 'a', name: 'A' }, { kind: 'workflows', localId: 'b', name: 'B' }]);
+  assert.match(out, /! 2 archived workflows are skipped/);
+  assert.match(out, /^ {4}weird {2}\[a\] {2}A$/m, 'unmapped kind printed as-is');
+  assert.match(out, /^ {4}workflow {2}\[b\] {2}B$/m);
+  assert.match(out, /unarchive them in n8n/);
+});
+
+test('renderPlanOrphans: plural wording and unknown kinds fall back to the raw kind', () => {
+  setStyle(false);
+  const out = renderPlanOrphans([{ kind: 'weird', name: 'A' }, { kind: 'credentials', name: 'B' }]);
+  assert.match(out, /! 2 entities exist on n8n\/in the DB but no longer have files:/);
+  assert.match(out, /^ {4}weird {2}A$/m, 'unmapped kind printed as-is');
+  assert.match(out, /^ {4}credential {2}B$/m);
+  assert.match(out, /plan their removal/);
+});
+
+test('renderGeneration: unmapped kinds sort and print by raw name; mapped kinds by singular', () => {
+  setStyle(false);
+  const g = { versionId: 'V', hash: 'h'.repeat(64), kinds: [], active: false, members: [
+    { kind: 'zeta', checksum: 'z'.repeat(64) }, { kind: 'workflows', checksum: 'w'.repeat(64) }, { kind: 'alpha', checksum: 'a'.repeat(64) },
+  ] };
+  const row = renderGeneration(g, false).split('\n')[1];
+  assert.equal(row.trim(), 'alpha aaaaaaaa · workflow wwwwwwww · zeta zzzzzzzz');
+});
+
+test('groupByGeneration sorts newest-first for any input order', () => {
+  const v = (versionId: string) => ({ versionId, isActive: false, checksum: 'c' });
+  for (const order of [['A', 'B', 'C'], ['C', 'B', 'A'], ['B', 'C', 'A'], ['A', 'C', 'B']]) {
+    const gens = groupByGeneration([{ kind: 'workflows', versions: order.map(v) }]);
+    assert.deepEqual(gens.map((g) => g.versionId), ['C', 'B', 'A'], order.join());
+  }
+});
+
+test('resolveGenerationRef: an ambiguous prefix lists each match, with its message when it has one', () => {
+  const gens = [
+    { versionId: 'V1', hash: 'abcd1111', kinds: [], members: [], active: false, message: 'first release' },
+    { versionId: 'V2', hash: 'abcd2222', kinds: [], members: [], active: false },
+  ];
+  assert.throws(() => resolveGenerationRef(gens, 'abcd'), (e: any) => {
+    assert.match(e.message, /ambiguous generation hash "abcd" \(2 matches\)/);
+    assert.match(e.message, /abcd1111 {2}V1 {2}first release/);
+    assert.match(e.message, /abcd2222 {2}V2\n/);
+    return true;
+  });
+});
+
+// ---- plan/apply summary sections
+test('plan lists an archived workflow whose file differs as skipped', async (t) => {
+  const wf = { ...WF('W1', 'Main'), isArchived: true };
+  await withFake({ workflows: [wf] });
+  const cap = capture(t);
+  await runCli(['init']);
+  await runCli(['pull', '-y']);
+  renameWf('Main Edited');
+  cap.out.length = 0;
+  await runCli(['plan']);
+  assert.match(cap.text(), /Plan: 0 to create, 0 to update, 0 to destroy\./);
+  assert.match(cap.text(), /! 1 archived workflow is skipped — n8n rejects updates to archived workflows:/);
+  assert.match(cap.text(), /workflow {2}\[[^\]]+\] {2}Main Edited/);
+  assert.match(cap.text(), /unarchive it in n8n to let the change apply\./);
+});
+
+test('apply on a legacy saved plan without orphans/ignored prints just the summary line', async (t) => {
+  const { fake, cap } = await seedPulled(t);
+  renameWf('Local Edit');
+  await runCli(['plan']);
+  const dir = join(cwd, '.states');
+  const file = join(dir, readdirSync(dir)[0]);
+  const st = JSON.parse(readFileSync(file, 'utf8'));
+  delete st.orphans; delete st.ignored;
+  writeFileSync(file, JSON.stringify(st));
+  cap.out.length = 0;
+  await runCli(['apply']);
+  assert.match(cap.text(), /Plan: 0 to create, 1 to update, 0 to destroy\./);
+  assert.doesNotMatch(cap.text(), /no longer has a file|archived/);
+  assert.ok(fake.calls.some((c) => c.method === 'PUT' && c.url === '/api/v1/workflows/W1'));
+  assert.match(cap.text(), /Apply complete: 1 applied, 0 failed\./);
+});
+
+// ---- style switch (preAction hook)
+test('color is on for a TTY stdout and off for --pipe or NO_COLOR', async (t) => {
+  await seedPulled(t);
+  const cap = capture(t);
+  const wasTTY = process.stdout.isTTY; const wasArgv = process.argv;
+  (process.stdout as any).isTTY = true;
+  try {
+    delete process.env.NO_COLOR;
+    process.argv = ['node', 'n8c', 'list'];
+    await runCli(['list']);
+    assert.ok(cap.text().includes('\x1b['), 'TTY, no flag → styled');
+    cap.out.length = 0;
+    process.argv = ['node', 'n8c', 'list', '--pipe'];
+    await runCli(['list']);
+    assert.ok(!cap.text().includes('\x1b['), '--pipe → raw');
+    cap.out.length = 0;
+    process.argv = ['node', 'n8c', 'list']; process.env.NO_COLOR = '1';
+    await runCli(['list']);
+    assert.ok(!cap.text().includes('\x1b['), 'NO_COLOR → raw');
+  } finally {
+    process.argv = wasArgv; setStyle(false);
+    if (wasTTY === undefined) delete (process.stdout as any).isTTY; else (process.stdout as any).isTTY = wasTTY;
+  }
+});
+
+// ---- version fallback
+test('the program version falls back to 0.0.0 when package.json cannot be read', (t) => {
+  const real = fsMod.readFileSync;
+  t.mock.method(fsMod, 'readFileSync', (p: any, ...rest: any[]) => {
+    if (String(p).endsWith('package.json')) throw new Error('ENOENT');
+    return (real as any)(p, ...rest);
+  });
+  syncBuiltinESMExports();
+  try { assert.equal(buildProgram().version(), '0.0.0'); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.notEqual(buildProgram().version(), '0.0.0', 'real version restored');
+});
+
+// ---- init --agents without a usable config
+test('init --agents renders the generic section when the config is unreadable', async (t) => {
+  writeFileSync(join(cwd, 'n8c.config.json'), '{ not json');
+  const cap = capture(t);
+  await runCli(['init', '--agents', '--project-only']);
+  assert.match(cap.text(), /AGENTS\.md created/);
+  const md = readFileSync(join(cwd, 'AGENTS.md'), 'utf8');
+  assert.match(md, /n8c\//, 'default root rendered');
+});
+
+test('init --agents treats a config without `database` as sqlite', async (t) => {
+  writeFileSync(join(cwd, 'n8c.config.json'), '{}');
+  const cap = capture(t);
+  await runCli(['init', '--agents', '--project-only']);
+  assert.match(cap.text(), /AGENTS\.md created/);
+  const sqliteMd = readFileSync(join(cwd, 'AGENTS.md'), 'utf8');
+  rmSync(join(cwd, 'AGENTS.md'));
+  writeFileSync(join(cwd, 'n8c.config.json'), JSON.stringify({ database: 'mongodb' }));
+  await runCli(['init', '--agents', '--project-only']);
+  assert.notEqual(readFileSync(join(cwd, 'AGENTS.md'), 'utf8'), sqliteMd, 'mongodb renders differently from the sqlite default');
+});
+
+// ---- a mongodb backend, through a stubbed driver client
+function stubMongo(t: any, hello: any) {
+  const finds: any[] = [];
+  const col = {
+    createIndex: async () => 'idx',
+    find: (f: any) => { finds.push(f); const cur = { sort: () => cur, toArray: async () => [] }; return cur; },
+  };
+  const db = { collection: () => col, admin: () => ({ command: async () => hello }) };
+  t.mock.method(MongoClient.prototype, 'connect', async function (this: any) { return this; });
+  t.mock.method(MongoClient.prototype, 'close', async () => {});
+  t.mock.method(MongoClient.prototype, 'db', () => db);
+  process.env.MONGO_URI = 'mongodb://stub'; process.env.MONGO_DB = 'n8c_test';
+  writeFileSync(join(cwd, 'n8c.config.json'), JSON.stringify({ database: 'mongodb' }));
+  return finds;
+}
+
+test('init on mongodb reports a replica set', async (t) => {
+  stubMongo(t, { setName: 'rs0' });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  assert.match(cap.text(), /DB indexes reconciled: /);
+  assert.match(cap.text(), /replica set: OK \(transactions supported\)/);
+  assert.doesNotMatch(cap.text(), /prompt-content feature is disabled/);
+});
+
+test('init on mongodb warns when it is not a replica set', async (t) => {
+  stubMongo(t, {});
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  assert.match(cap.text(), /WARNING: not a replica set — apply transactions will fail/);
+  assert.doesNotMatch(cap.text(), /replica set: OK/);
+});
+
+test('list on mongodb also reads the prompt-content kind', async (t) => {
+  const finds = stubMongo(t, {});
+  capture(t);
+  await runCli(['list']);
+  const kinds = finds.map((f) => f.kind).filter(Boolean);
+  assert.deepEqual([...new Set(kinds)].sort(), ['credentials', 'promptContents', 'prompts', 'workflows']);
+});
+
+// ---- types: no n8n, odd credentials, root == cwd
+test('types works without an n8n connection and writes tsconfig for a root at the project dir', async (t) => {
+  writeFileSync(join(cwd, 'n8c.config.json'), JSON.stringify({ root: '.' }));
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  await runCli(['types']); // no N8N_BASE → ctx.n8n undefined
+  assert.match(cap.text(), /types written → .*n8c\.types\.ts/);
+  assert.ok(existsSync(join(cwd, 'n8c.types.ts')), 'written at the project root');
+  const ts = JSON.parse(readFileSync(join(cwd, 'tsconfig.json'), 'utf8'));
+  assert.match(JSON.stringify(ts), /n8c/, 'empty relative root falls back to n8c');
+});
+
+test('types skips server credentials that have no type', async (t) => {
+  const fake = await withFake({ credentials: [{ id: 'c1', name: 'Typeless' }, { id: 'c2', name: 'H', type: 'httpHeaderAuth' }] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  mkdirSync(join(cwd, 'n8c'));
+  await runCli(['types']);
+  assert.match(cap.text(), /types written → /);
+  const schemaCalls = fake.calls.filter((c) => c.url.startsWith('/api/v1/credentials/schema/')).map((c) => c.url);
+  assert.deepEqual(schemaCalls, ['/api/v1/credentials/schema/httpHeaderAuth'], 'only the typed credential is looked up');
+});
+
+// ---- pull: non-Error failures are stringified
+function failWritesWith(t: any, match: RegExp, thrown: unknown) {
+  const real = fsMod.writeFileSync;
+  t.mock.method(fsMod, 'writeFileSync', (p: any, ...rest: any[]) => {
+    if (match.test(String(p))) throw thrown;
+    return (real as any)(p, ...rest);
+  });
+  syncBuiltinESMExports();
+}
+
+test('pull reports a non-Error types failure as text', async (t) => {
+  await withFake({ workflows: [WF('W1', 'Main')] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  failWritesWith(t, /n8c\.types\.ts$/, 'types disk full');
+  try { await runCli(['pull']); } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.match(cap.errText(), /⚠ types skipped: types disk full/);
+  assert.ok(existsSync(wfMetaPath()), 'export still happened');
+});
+
+test('pull reports a non-Error export failure as text', async (t) => {
+  await withFake({ workflows: [WF('W1', 'Main')] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  failWritesWith(t, /workflows[\\/].*metadata\.json$/, 'export disk full');
+  try { await runCli(['pull']); } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.match(cap.errText(), /⚠ export skipped for workflow: export disk full/);
+  assert.match(cap.text(), /✓ generation/, 'the pull itself still committed');
+});
+
+// ---- restore --apply with a failing baseline refresh
+test('restore --apply warns when the post-apply baseline cannot be refreshed', async (t) => {
+  const { fake, cap, first } = await twoGenerations(t);
+  fake.fail.push((c, calls) => c.method === 'GET' && c.url.startsWith('/api/v1/workflows') && calls.some((x) => x.method === 'PUT' && x.body?.name === 'Main'));
+  cap.out.length = 0;
+  await runCli(['restore', first, '--apply']);
+  assert.match(cap.text(), /could not refresh the post-apply baseline/);
+  assert.match(cap.text(), /Apply complete: 1 applied, 0 failed\./);
+  const dir = join(cwd, '.states');
+  const st = JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), 'utf8'));
+  assert.equal(st.serverListed, false);
+  assert.equal(st.serverFacts, undefined);
+});
+
+// ---- entry-point detection (subprocess: the module is loaded fresh)
+test('running the CLI with no command prints help and exits 0', () => {
+  const out = execFileSync('node', [CLI_SRC], { cwd, encoding: 'utf8' });
+  assert.match(out, /Usage: n8c/);
+  assert.match(out, /Commands:/);
+});
+
+test('importing the CLI module never runs main (no argv[1], or an argv[1] that does not resolve)', () => {
+  const code = `const m = await import(${JSON.stringify(pathToFileURL(CLI_SRC).href)}); console.log('imported', typeof m.buildProgram);`;
+  const noArg = execFileSync('node', ['--input-type=module', '-e', code], { cwd, encoding: 'utf8' });
+  assert.equal(noArg.trim(), 'imported function', 'no argv[1]: not the entry point, no help printed');
+  const badArg = execFileSync('node', ['--input-type=module', '-e', code, join(cwd, 'does-not-exist')], { cwd, encoding: 'utf8' });
+  assert.equal(badArg.trim(), 'imported function', 'unresolvable argv[1]: not the entry point');
 });
