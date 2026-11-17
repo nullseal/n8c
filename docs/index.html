@@ -207,7 +207,7 @@
 <span class="tok-p">$</span> <span class="tok-k">n8c</span> pull              <span class="tok-c"># live n8n → versioned files</span>
 <span class="tok-p">$</span> <span class="tok-k">n8c</span> plan              <span class="tok-c"># diff files vs live — no surprises</span>
 <span class="tok-p">$</span> <span class="tok-k">n8c</span> apply             <span class="tok-c"># deploy; every apply is a release</span>
-<span class="tok-p">$</span> <span class="tok-k">n8c</span> restore <span class="tok-k">&lt;rel&gt;</span>   <span class="tok-c"># broke something? one-command rollback</span></code></pre>
+<span class="tok-p">$</span> <span class="tok-k">n8c</span> restore <span class="tok-k">&lt;rel&gt;</span> --apply  <span class="tok-c"># broke something? one-command rollback</span></code></pre>
     </div>
   </div>
 </section>
@@ -221,17 +221,17 @@
       <div class="card">
         <div class="ic">🤖</div>
         <h3>A safety net for AI</h3>
-        <p>Let an AI edit your automation freely. Every <code>apply</code> is a restorable release, so <code>n8c restore &lt;release&gt;</code> returns the whole instance — workflows, prompts and credentials together — to a point you know was good. Agents can drive the whole loop natively over MCP (<code>n8c mcp</code>), and <code>n8c init --agents</code> teaches them the rules via <code>AGENTS.md</code>.</p>
+        <p>Let an AI edit your automation freely. Every <code>apply</code> is a restorable release, so <code>n8c restore &lt;release&gt; --apply</code> returns the whole instance — workflows, prompts and credentials together — to a point you know was good. Agents can drive the whole loop natively over MCP (<code>n8c mcp</code>), and <code>n8c init --agents</code> teaches them the rules via <code>AGENTS.md</code>.</p>
       </div>
       <div class="card">
         <div class="ic">🙈</div>
         <h3>Secrets your AI never sees</h3>
-        <p>Credential values live only in your <code>.env</code>, resolved from <code>process.env</code> at deploy time — never in a file, never committed, never in the directory the agent works in. Code holds only <code>process.env.MY_TOKEN</code>.</p>
+        <p>Credential values come from your <code>.env</code>, resolved from <code>process.env</code> at deploy time — never in an entity file, never committed, never in the directory the agent works in. Code holds only <code>process.env.MY_TOKEN</code>.</p>
       </div>
       <div class="card">
         <div class="ic">🔐</div>
         <h3>Encrypted at rest</h3>
-        <p>Before a credential reaches the database it's encrypted with AES-256-GCM (<code>N8C_CREDENTIAL_ENCRYPTION_KEY</code>) — never persisted in plaintext.</p>
+        <p>Before a credential reaches the database it's encrypted with AES-256-GCM (<code>N8C_CREDENTIAL_ENCRYPTION_KEY</code>) — never persisted in plaintext unless you opt out (<code>credentials.encrypted: false</code>).</p>
       </div>
       <div class="card">
         <div class="ic">🧭</div>
@@ -411,13 +411,13 @@ MONGO_DB=n8c</code></pre></div>
         <h3 style="margin-bottom:14px">Database collections</h3>
         <ul class="clean">
           <li><b>n8c_workflows</b> — live docs + every version</li>
-          <li><b>n8c_prompts</b> — build-time prompts wired into nodes</li>
+          <li><b>n8c_prompts</b> — build-time prompts extracted from nodes</li>
           <li><b>n8c_prompt_contents</b> — runtime prompts read at execution</li>
           <li><b>n8c_credentials</b> — encrypted at rest + versions</li>
           <li><b>n8c_manifests</b> — version metadata only</li>
           <li><b>n8c_definitions</b> — per-env <code>localId → n8nId</code> map</li>
         </ul>
-        <p style="color:var(--text-dim); font-size:0.92rem; margin-top:14px">Every collection name is configurable — override the <code>n8c_</code> prefix or any single name in <code>n8c.config.json</code>.</p>
+        <p style="color:var(--text-dim); font-size:0.92rem; margin-top:14px">On MongoDB, every collection name is configurable — override the <code>n8c_</code> prefix or any single name in <code>n8c.config.json</code>. SQLite keeps the same data in fixed tables.</p>
       </div>
     </div>
   </div>
@@ -448,7 +448,7 @@ MONGO_DB=n8c</code></pre></div>
 
     <div class="callout" style="border-left-color: var(--green)">
       <span class="ci">🔐</span>
-      <p><b>Secrets, done right.</b> A credential's <code>apply.ts</code> reads its value from <code>process.env.MY_TOKEN</code>. The reference is what lives in files and the DB — never the resolved secret. At rest, credential data is encrypted with AES-256-GCM.</p>
+      <p><b>Secrets, done right.</b> A credential's <code>apply.ts</code> reads its value from <code>process.env.MY_TOKEN</code>. Files only ever hold that reference; <code>apply</code> stores the resolved secret in the DB, encrypted with AES-256-GCM (unless you set <code>credentials.encrypted: false</code>).</p>
     </div>
 
     <div class="callout" style="border-left-color: var(--blue)">
