@@ -2,8 +2,8 @@
 
 These diagrams are maintained with the code: any PR that changes a flow shown here updates the diagram (same rule as the 100% coverage gate).
 
-Every arrow is a real call or data flow in `src/`; the one dotted arrow (diagram 12) is n8n reading
-the DB, outside n8c. The **Source** line under each diagram names the files and functions it depicts;
+Every arrow is a real call or data flow in `src/`; dotted or dashed lines are not call arrows: diagram 12's dotted arrow is n8n reading
+the DB (outside n8c), and dashed lines in diagrams 6, 9 and 10 are sequence replies or class relations. The **Source** line under each diagram names the files and functions it depicts;
 re-check those when that code changes. The diagrams use Mermaid 11 syntax, which GitHub renders.
 
 ## Vocabulary
@@ -44,7 +44,9 @@ flowchart TB
     FILES["n8c/{kind}/{localId}/<br/>metadata.json + apply.ts"]
     UNITS["src/{unit}/<br/>Code-node units"]
     FILES --> RE["readEntity"]
-    UNITS -->|"buildSources:<br/>codeByNode"| RE
+    UNITS -->|"buildSources: codeByNode, used only by the<br/>staleness checksum (desiredBundleChecksum),<br/>NOT the plan diff or validateAll<br/>(known gap)"| CP
+    UNITS -->|"codeByNode"| AFS
+    RE -->|"apply re-reads files + codeByNode<br/>(desiredByKind)"| AFS
     RE --> VAL["validateAll"]
     RE --> BD["buildDocs:<br/>checksum + beforeSave"]
     VAL -->|"a problem<br/>refuses the plan"| CP["computePlan"]
@@ -68,7 +70,8 @@ flowchart TB
     AFS -->|"upsertLive, putLive"| LIVE
     AFS -->|"putDefinitions"| DEFS
     AFS -->|"createSnapshot +<br/>markActive"| VERS
-    AFS -->|"applied result +<br/>refreshed baseline"| STATE
+    AFS -->|"state.applied"| CLI["CLI (cli.ts apply handler)"]
+    CLI -->|"refreshed baseline +<br/>writeState"| STATE
     N8N -->|"listWorkflows,<br/>listCredentials"| PULL["n8c pull"]
     PULL -->|"putLive"| LIVE
     PULL -->|"putDefinitions"| DEFS
@@ -281,14 +284,14 @@ flowchart TD
     AP["apply: ids returned by<br/>pushToServer, deleted<br/>rows removed"]
     DEFS[("credential definitions, per env<br/>localId to id, name, updatedAt<br/>normalized on write: one<br/>localId per n8n id")]
     PF -->|"putDefinitions<br/>(replaces)"| DEFS
-    MW -->|"putDefinitions<br/>(merged)"| DEFS
+    MW -->|"putDefinitions<br/>(merged: each entry rewritten to<br/>id + node reference name,<br/>stored updatedAt dropped)"| DEFS
     AP -->|"putDefinitions"| DEFS
 
     subgraph PLAN["plan: one credential file"]
         M{"mapped?"}
         L{"listCredentials<br/>succeeded?"}
         S{"mapped id<br/>still on n8n?"}
-        D{"name or type differs,<br/>n8n updatedAt differs<br/>from the mapped one,<br/>or the file differs from<br/>the live doc (or none)?"}
+        D{"name or type differs,<br/>n8n updatedAt differs<br/>from the mapped one<br/>(inert when the mapping has no<br/>updatedAt, e.g. after a pull),<br/>or the file differs from<br/>the live doc (or none)?"}
         F{"file differs from<br/>the live doc<br/>(or none)?"}
         CREATE["create"]
         UPDATE["update (PATCH)"]
@@ -317,13 +320,16 @@ flowchart TD
     DEFS --> V
     DEFS --> N
     DEFS --> B
-    DEFS --> X["pull, restore: exportDocs<br/>n8n id to localId via credIndex,<br/>unmapped: export fails,<br/>environment.json lists them"]
+    DEFS --> X["pull, restore: exportDocs<br/>n8n id to localId via credIndex,<br/>unmapped: export fails,<br/>environment.json lists the<br/>mapped credentials the workflow uses"]
     X -->|"writes"| NF
 ```
 
 - The pull writes the credential mapping with replace semantics from `listCredentials`, which only sees
   credentials the API key can reach; `mapCredentialsFromWorkflows` then merges every node reference back
-  in, so a credential from another n8n project still resolves on export.
+  in, so a credential from another n8n project still resolves on export. The merge (`resolveCredLocalId`)
+  rewrites each existing entry to `{ id, name: node reference name }`, discarding the `updatedAt` the
+  credential pull just stored, so the plan's "n8n updatedAt differs" check is inert after a pull for every
+  node-referenced credential until n8c next pushes it (known bug, being fixed separately).
 - `apply` runs the credentials kind first and saves its mapping before workflows push, so
   `workflow.beforePush` can bind a credential created in the same apply.
 
@@ -475,7 +481,7 @@ single kind.
 ```mermaid
 flowchart TD
     subgraph WRITE["Writing a generation"]
-        AP["apply: applyFromState<br/>changed something"] --> G1["generation = nextVersionId<br/>ISO timestamp,<br/>strictly increasing"]
+        AP["apply: applyFromState<br/>starts"] --> G1["generation = nextVersionId<br/>minted at apply start,<br/>used only if something changed<br/>(ISO timestamp, strictly increasing)"]
         G1 --> SNAP["each kind with live docs:<br/>createSnapshot(kind, generation,<br/>live docs, bundle checksum,<br/>message) + markActive"]
         PL["pull: a kind's checksum<br/>differs from the<br/>active generation"] --> G2["commitPullGeneration<br/>(nextVersionId)"]
         G2 --> SNAP2["each non-empty pulled kind:<br/>createSnapshot + markActive"]
@@ -535,7 +541,7 @@ sequenceDiagram
     CP->>CP: diff prompts, credentials, workflows
     CP-->>CLI: state, serverListed =<br/>listed and serverFacts set
     CLI->>SF: writeState
-    Note over CLI: serverListed false: plan says why,<br/>and that apply will refuse
+    Note over CLI: serverListed false: plan says why. Only a failed<br/>baseline read prints that apply will refuse,<br/>a failed credential listing prints a<br/>local-DB-only warning
 
     Op->>CLI: n8c apply
     CLI->>SF: readState
@@ -715,7 +721,7 @@ flowchart TD
         CR["credentials: pullEntity<br/>credential.pullFromServer<br/>(listCredentials)<br/>putDefinitions + putLive"]
         W --> PR --> PC --> CR
     end
-    CR --> MAP["mapCredentialsFromWorkflows<br/>listWorkflows, node credential<br/>refs merged into the<br/>credential definitions"]
+    CR --> MAP["mapCredentialsFromWorkflows<br/>listWorkflows, node credential<br/>refs merged into the<br/>credential definitions<br/>(merge drops stored updatedAt)"]
     MAP --> CHG{"Phase 2: a kind's checksum<br/>differs from its<br/>active-generation member?"}
     CHG -->|"yes"| GEN["commitPullGeneration<br/>(nextVersionId):<br/>createSnapshot + markActive<br/>for every non-empty kind"]
     CHG -->|"no"| SAME["nothing changed,<br/>no new generation"]
@@ -764,7 +770,7 @@ flowchart TB
         CS --> NC["N8nClient(N8N_BASE, N8N_API_KEY,<br/>n8nProjectId), only when<br/>N8N_BASE is set"]
         NC --> EC["ctx: env, encrypted,<br/>encryptionKey, n8n,<br/>getDefinitions,<br/>promptContentsEnabled"]
     end
-    NC -->|"each request"| DBG["debugRequest + debugResponse<br/>printed only with --debug,<br/>secrets redacted"]
+    NC -->|"each request"| DBG["debugRequest + debugResponse<br/>printed only with --debug,<br/>request bodies redacted,<br/>n8n response bodies printed raw"]
 ```
 
 **Source:** `src/cli.ts` (`buildProgram`, `isEntryPoint`, `writeTypesFile`, init / types / db / create / mcp handlers), `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/store/factory.ts` (`createStore`), `src/engine/init.ts` (`initProject`, `initDb`), `src/engine/agent-context.ts` (`renderAgentSection`, `upsertAgentsMd`), `src/engine/types-gen.ts` (`fetchCredentialTypes`, `jsonSchemaToTs`, `renderTypesFile`, `renderTsconfig`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/engine/generate.ts` (`createEntity`), `src/style.ts`, `src/debug.ts` (`redact`, `debugRequest`, `debugResponse`), `src/n8n.ts` (constructor, `req`).
