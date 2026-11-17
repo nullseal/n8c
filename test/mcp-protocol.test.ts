@@ -212,15 +212,22 @@ test('spawnCliRunner resolves { ok: false } with the error text when the child c
 test('makeLineHandler survives a throwing stdout write — the next message is still processed', async () => {
   let calls = 0;
   const run: ToolRunner = async () => { calls += 1; return { text: 'ok', ok: true }; };
-  const line = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } });
+  const mk = (id: number) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'n8c_plan', arguments: {} } });
   const originalWrite = process.stdout.write.bind(process.stdout);
-  let writes = 0;
-  process.stdout.write = (function () { writes += 1; if (writes === 1) throw new Error('EPIPE'); return true; }) as typeof process.stdout.write;
+  // Only count this test's own JSON-RPC responses (ids 9101/9102); ignore unrelated stdout writes.
+  const ours: number[] = [];
+  process.stdout.write = (function (chunk: unknown, ...rest: unknown[]) {
+    const m = /"id":(910[12])\b/.exec(String(chunk));
+    if (!m) return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    ours.push(Number(m[1]));
+    if (ours.length === 1) throw new Error('EPIPE');
+    return true;
+  }) as typeof process.stdout.write;
   try {
     const enqueue = makeLineHandler(run, '0.3.0');
-    await enqueue(line); // write throws → swallowed by the queue's catch
-    await enqueue(line);
+    await enqueue(mk(9101)); // write throws → swallowed by the queue's catch
+    await enqueue(mk(9102));
   } finally { process.stdout.write = originalWrite; }
   assert.equal(calls, 2);
-  assert.equal(writes, 2, 'second message reached stdout');
+  assert.deepEqual(ours, [9101, 9102], 'second message reached stdout after the first write threw');
 });

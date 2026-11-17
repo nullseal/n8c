@@ -79,7 +79,7 @@ test('resolveDep: extensionless spec resolves to helper.ts', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('resolveDep: a spec that exists only without .ts is returned as-is (then fails on content)', () => {
+test('resolveDep: a spec that exists only without .ts is returned as-is (extensionless file is inlined)', () => {
   const dir = unit({
     'plain': 'export const P = 1;\n',
     'code.ts': "import { P } from './plain';\nreturn [{ json: { P } }];\n",
@@ -97,10 +97,13 @@ test('resolveDep: an unresolvable spec throws cannot resolve import', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('an import-shaped line the inliner does not consume throws unsupported import/export form', () => {
-  // A template-literal line starting with `import` survives type stripping but is not an
-  // `import ... from` statement, so IMPORT_RE leaves it behind.
-  const dir = unit({ 'code.ts': "const s = `\nimport './x.ts';`;\nreturn [{ json: { s } }];\n" });
+test('a side-effect import in a helper is not consumed and throws unsupported import/export form', () => {
+  // IMPORT_RE requires `from`, so `import './side.ts';` is never consumed. At helper module
+  // scope it survives type stripping (no wrapper), reaching the final leftover-import check.
+  const dir = unit({
+    'helper.ts': "import './side.ts';\nexport const H = 1;\n",
+    'code.ts': "import { H } from './helper.ts';\nreturn [{ json: { H } }];\n",
+  });
   try {
     assert.throws(() => inlineUnit(dir), /unsupported import\/export form/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
