@@ -149,7 +149,7 @@ test('planAgainstServer marks rows whose server workflow is archived', async () 
       getDefinitions: async () => ({}),
     } as any;
 
-    const rows = await planAgainstServer(new MemoryStore(), (await import('../src/entities/index.ts')).entityByKind['workflows'], root, ctx);
+    const rows = await planAgainstServer(new MemoryStore(), (await import('../src/entities/index.ts')).entityByKind['workflows'], root, ctx, {});
     const keep = rows.find((r) => r.localId === 'liveLocal')!;
     const arch = rows.find((r) => r.localId === 'archLocal')!;
     assert.equal(keep.archived, false, 'live workflow not archived');

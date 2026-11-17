@@ -140,6 +140,8 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
     try { serverFacts = await readServerFacts(ctx, { credentials: rawCredentials }); } catch { /* no baseline recorded this run */ }
   }
 
+  // Built units (src/<unit>) for the workflow diff below — the same inlined code
+  // applyFromState pushes, so plan compares against n8n what apply would deploy.
   const codeByNode = (await buildSources(dirname(root))).codeByNode;
   const resources: Resource[] = [];
 
@@ -222,7 +224,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   }
 
   // workflows: diff desired files vs the live n8n server
-  const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx);
+  const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx, codeByNode);
   for (const r of rows) {
     if (r.status === 'removed') {
       // File deleted locally. On a shared instance never delete implicitly — report

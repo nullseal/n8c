@@ -115,10 +115,15 @@ export function planDiff(
 
 // Verify the desired files against the LIVE n8n server (uses the API key).
 // Writes nothing and pushes nothing — the read-only "what would change?" view.
-export async function planAgainstServer(store: Store, desc: EntityDescriptor, root: string, ctx: EntityContext): Promise<PlanRow[]> {
+//
+// `codeByNode` is the built `src/<unit>` code apply inlines into its target Code
+// nodes (buildSources). It is required, not defaulted: the desired side must be the
+// exact body apply will push, or a unit-only edit plans as noop (never deployed)
+// and a deployed unit never plans as in sync.
+export async function planAgainstServer(store: Store, desc: EntityDescriptor, root: string, ctx: EntityContext, codeByNode: Record<string, string>): Promise<PlanRow[]> {
   if (!ctx.n8n) throw new Error('--plan needs an n8n connection (set N8N_BASE + N8N_API_KEY)');
   if (!desc.pullFromServer) throw new Error(`--plan is not supported for ${desc.kind} (no server state to compare)`);
-  const desired = await buildDocs(desc, root, ctx);
+  const desired = await buildDocs(desc, root, ctx, codeByNode);
   const server = await desc.pullFromServer(ctx);
   const credMap = credIdMap(await ctx.getDefinitions('credentials'));
   const serverByLocal = new Map(server.map((s: any) => [s.localId, s.body]));
