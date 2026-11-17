@@ -5,12 +5,18 @@ import '../src/store/sqlite-quiet.ts';
 async function warningsFor(msg: any): Promise<string[]> {
   const seen: string[] = [];
   const listener = (w: Error) => { seen.push(w.message); };
+  // Detach Node's default 'warning' printer so pass-through warnings don't hit stderr.
+  const prior = process.listeners('warning');
+  process.removeAllListeners('warning');
   process.on('warning', listener);
   try {
     process.emitWarning(msg);
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
-  } finally { process.off('warning', listener); }
+  } finally {
+    process.off('warning', listener);
+    for (const l of prior) process.on('warning', l as (...args: any[]) => void);
+  }
   return seen;
 }
 
