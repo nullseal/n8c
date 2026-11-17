@@ -108,3 +108,12 @@ test('updateCredential sends PATCH /credentials/:id with the body', async () => 
   await client.updateCredential('C9', { name: 'n', data: { a: 1 } });
   assert.deepEqual(calls, [{ method: 'PATCH', url: 'https://n8n.test/api/v1/credentials/C9', body: { name: 'n', data: { a: 1 } } }]);
 });
+
+test('createCredential without a projectId posts the body unchanged', async () => {
+  const calls: any[] = [];
+  const fetchImpl = async (url: string, init: any) => { calls.push({ url, body: JSON.parse(init.body) }); return { ok: true, status: 200, text: async () => '{}', json: async () => ({ id: 'C1' }) } as any; };
+  const c = new N8nClient('https://n8n.test', 'K', fetchImpl as any);
+  await c.createCredential({ name: 'C', type: 't', data: {} });
+  assert.deepEqual(calls[0].body, { name: 'C', type: 't', data: {} });
+  assert.ok(!('projectId' in calls[0].body));
+});

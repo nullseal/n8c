@@ -92,3 +92,7 @@ test('debug output is silent while disabled', () => {
   try { debugRequest('GET', '/x', {}); debugResponse(200, 'ok'); } finally { console.error = orig; }
   assert.deepEqual(lines, []);
 });
+
+test('debugResponse prints short text verbatim, without truncation', () => {
+  assert.deepEqual(captureStderr(() => debugResponse(404, 'not found')), ['← 404 not found']);
+});

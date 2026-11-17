@@ -108,3 +108,24 @@ test('a side-effect import in a helper is not consumed and throws unsupported im
     assert.throws(() => inlineUnit(dir), /unsupported import\/export form/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a unit directory without code.ts throws code.ts not found', () => {
+  const dir = unit({ 'other.ts': 'export const X = 1;\n' });
+  try {
+    assert.throws(() => inlineUnit(dir), /code\.ts not found/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a helper imported by two modules (diamond) is inlined exactly once', () => {
+  const dir = unit({
+    'shared.ts': 'export const SHARED = 7;\n',
+    'a.ts': "import { SHARED } from './shared.ts';\nexport const A = SHARED + 1;\n",
+    'b.ts': "import { SHARED } from './shared.ts';\nexport const B = SHARED + 2;\n",
+    'code.ts': "import { A } from './a.ts';\nimport { B } from './b.ts';\nreturn [{ json: { A, B } }];\n",
+  });
+  try {
+    const js = inlineUnit(dir);
+    assert.equal(js.split('const SHARED = 7').length - 1, 1, 'shared helper appears once');
+    assert.ok(js.includes('const A =') && js.includes('const B ='));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
