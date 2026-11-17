@@ -397,8 +397,9 @@ Whatever the setting, `apply` archives a live workflow (after `plan --destroy`) 
 **API key permissions.** Updating a published workflow makes n8n re-publish it. When n8n refuses that publish
 with a 403 whose message names `workflow:activate` or `workflow:publish`, it **still keeps the new version as a
 draft**, and n8c says so: grant the API key that permission and re-run `n8c apply` on the **same saved plan** (a
-fresh `n8c plan` compares against n8n's saved draft and will show no change), or set `active: false` in the
-workflow's file. Any other 403 (for example a key without `workflow:update`, where n8n saved nothing) comes back
+fresh `n8c plan` compares against n8n's saved draft and will show no change), or, to deploy without publishing,
+unpublish the workflow in n8n first **and** set `active: false` in its file (the PUT would otherwise re-publish
+it and hit the same 403 before any deactivate step). Any other 403 (for example a key without `workflow:update`, where n8n saved nothing) comes back
 as n8n's own error, unchanged.
 
 ## Storage backends
@@ -602,6 +603,9 @@ Why branches is 98, not 100:
 - Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by up to
   about 0.3 percentage points between identical runs, and single files' branches flip too. A 100 gate
   would fail at random.
+- On rare runs the line total can also dip a fraction of a percent below 100 even though every test passes
+  (Node's merge of the per-process coverage reports occasionally loses part of one report). Re-run
+  `npm run test:cov`, and treat it as real only if it repeats.
 
 To find what is uncovered, emit an lcov report and look for zero hits:
 

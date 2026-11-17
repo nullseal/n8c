@@ -813,7 +813,7 @@ flowchart TD
 - A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
   `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and
   how to recover: grant the permission and re-run `n8c apply` on the same saved plan (a fresh `n8c plan` compares
-  against the saved draft and shows no change), or set `active: false` in the workflow's file. Any other 403 (for
+  against the saved draft and shows no change), or, to deploy without publishing, unpublish the workflow in n8n first and set `active: false` in its file (apply pushes the body before it changes the active state, so a still-published workflow re-publishes on the PUT and hits the same 403). Any other 403 (for
   example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
 

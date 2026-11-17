@@ -26,7 +26,7 @@ export class N8nClientV2 extends N8nClientBase {
       // (e.g. no workflow:update: nothing was saved) and every other error pass
       // through as the same object.
       if (e?.status === 403 && /workflow:(activate|publish)/.test(e.message)) {
-        const err: any = new Error(`n8n saved the new version of workflow ${id} as a DRAFT and refused to publish it because the API key lacks the workflow:activate / workflow:publish permission. Grant it and re-run \`n8c apply\` on the SAME saved plan — a fresh \`n8c plan\` compares against n8n's saved draft and will show no change — or set \`active: false\` in the workflow's file. (${e.message})`, { cause: e });
+        const err: any = new Error(`n8n saved the new version of workflow ${id} as a DRAFT and refused to publish it because the API key lacks the workflow:activate / workflow:publish permission. Grant it and re-run \`n8c apply\` on the SAME saved plan — a fresh \`n8c plan\` compares against n8n's saved draft and will show no change — or, to deploy without publishing, unpublish the workflow in n8n first AND set \`active: false\` in its file. (${e.message})`, { cause: e });
         err.status = e.status;
         throw err;
       }

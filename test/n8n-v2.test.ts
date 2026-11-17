@@ -30,7 +30,7 @@ function throwing(Cls: typeof N8nClientV2, err: unknown): N8nClientV2 {
 // Shaped like the error req() throws for a failed PUT.
 const n8nError = (status: number, body: string) => Object.assign(new Error(`n8n PUT /api/v1/workflows/W1 -> ${status} ${body}`), { status });
 const rejection = (p: Promise<unknown>): Promise<any> => p.then(() => assert.fail('expected a rejection'), (e) => e);
-const GUIDANCE = /Grant it and re-run `n8c apply` on the SAME saved plan — a fresh `n8c plan` compares against n8n's saved draft and will show no change — or set `active: false` in the workflow's file\./;
+const GUIDANCE = /Grant it and re-run `n8c apply` on the SAME saved plan — a fresh `n8c plan` compares against n8n's saved draft and will show no change — or, to deploy without publishing, unpublish the workflow in n8n first AND set `active: false` in its file\./;
 
 // ---- Shared behavior: V3 inherits it from V2, so both classes run the same suite.
 const classes: [string, typeof N8nClientV2][] = [['V2', N8nClientV2], ['V3', N8nClientV3]];
@@ -42,7 +42,6 @@ for (const [name, Cls] of classes) {
     const e = await rejection(client.updateWorkflow('W1', {}));
     assert.match(e.message, /^n8n saved the new version of workflow W1 as a DRAFT and refused to publish it because the API key lacks the workflow:activate \/ workflow:publish permission\. /);
     assert.match(e.message, GUIDANCE);
-    assert.doesNotMatch(e.message, /unpublish/, 'no "unpublish the workflow" advice');
     assert.ok(e.message.endsWith(`(n8n PUT /api/v1/workflows/W1 -> 403 ${body})`), 'original error text appended');
     assert.equal(e.status, 403);
     assert.equal(e.cause.message, `n8n PUT /api/v1/workflows/W1 -> 403 ${body}`);
