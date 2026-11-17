@@ -33,6 +33,7 @@ re-check those when that code changes. The diagrams use Mermaid 11 syntax, which
 12. [Prompts](#12-prompts)
 13. [Pull and export](#13-pull-and-export)
 14. [CLI commands and context](#14-cli-commands-and-context)
+15. [n8n API clients (2.x / 3.x)](#15-n8n-api-clients-2x--3x)
 
 ## 1. Command and data flow
 
@@ -44,7 +45,7 @@ flowchart TB
     FILES["n8c/{kind}/{localId}/<br/>metadata.json + apply.ts"]
     UNITS["src/{unit}/<br/>Code-node units"]
     FILES --> RE["readEntity"]
-    UNITS -->|"buildSources: codeByNode, used only by the<br/>staleness checksum (desiredBundleChecksum),<br/>NOT the plan diff or validateAll<br/>(known gap)"| CP
+    UNITS -->|"buildSources: codeByNode, used only by the<br/>staleness checksum (desiredBundleChecksum,<br/>recomputed by plan and by the apply<br/>handler files-unchanged check),<br/>NOT the plan diff or validateAll<br/>(known gap)"| CP
     UNITS -->|"codeByNode"| AFS
     RE -->|"apply re-reads files + codeByNode<br/>(desiredByKind)"| AFS
     RE --> VAL["validateAll"]
@@ -66,7 +67,7 @@ flowchart TB
     GATE -->|"block or stop"| HALT(["exit 1, nothing applied"])
     GATE -->|"proceed"| AFS["applyFromState"]
     CP -->|"apply --force:<br/>fresh plan, no gate"| AFS
-    AFS -->|"push, archive, delete,<br/>activate, deactivate"| N8N
+    AFS -->|"push, archive, delete,<br/>activate, deactivate<br/>(n8n 2.x/3.x: publish, unpublish,<br/>diagram 15)"| N8N
     AFS -->|"upsertLive, putLive"| LIVE
     AFS -->|"putDefinitions"| DEFS
     AFS -->|"createSnapshot +<br/>markActive"| VERS
@@ -164,7 +165,7 @@ stateDiagram-v2
             state "Create or update" as Upsert {
                 state serverKind <<choice>>
                 state "pushToServer(doc, new or changed)<br/>merge the returned ids into mapping" as Push
-                state "activateWorkflow or deactivateWorkflow" as SetActive
+                state "activateWorkflow or deactivateWorkflow<br/>(n8n 2.x/3.x: POST publish or unpublish)" as SetActive
                 state "upsertLive(kind, doc)" as Commit
                 [*] --> serverKind
                 serverKind --> Push : workflows or credentials, n8n client set
@@ -220,7 +221,7 @@ stateDiagram-v2
 - The refresh and `writeState` steps belong to the CLI (`apply`, and `restore --apply`); `apply` exits 1
   when any row failed.
 
-**Source:** `src/engine/apply-state.ts` (`applyFromState`), `src/engine/state.ts` (`activeKinds`, `desiredByKind`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`, `activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
+**Source:** `src/engine/apply-state.ts` (`applyFromState`), `src/engine/state.ts` (`activeKinds`, `desiredByKind`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`) and `src/n8n/v2.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 
 ## 4. Credential secrets
 
@@ -270,7 +271,7 @@ flowchart TD
 - The export decrypts the stored body but writes only `name` and `type`; restoring a version whose
   credential data is encrypted therefore needs the key.
 
-**Source:** `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/layout.ts` (`readEntity`), `src/engine/validate.ts` (`validateAll`, rule 4 and the key check), `src/engine/apply.ts` (`buildDocs`), `src/entities/credential.ts` (`beforeSave`, `beforePush`, `decryptCredentialData`, `pushToServer`, `sendWithSchemaDefaults`, `fillMissingFields`, `credentialFieldDefaults`, `explainCredentialError`, `pullFromServer`), `src/crypto.ts`, `src/engine/types-gen.ts` (`collectFieldDefaults`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/n8n.ts` (`createCredential`, `updateCredential`, `getCredentialSchema`), `src/engine/apply-state.ts`.
+**Source:** `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/layout.ts` (`readEntity`), `src/engine/validate.ts` (`validateAll`, rule 4 and the key check), `src/engine/apply.ts` (`buildDocs`), `src/entities/credential.ts` (`beforeSave`, `beforePush`, `decryptCredentialData`, `pushToServer`, `sendWithSchemaDefaults`, `fillMissingFields`, `credentialFieldDefaults`, `explainCredentialError`, `pullFromServer`), `src/crypto.ts`, `src/engine/types-gen.ts` (`collectFieldDefaults`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/n8n/base.ts` (`createCredential`, `updateCredential`, `getCredentialSchema`), `src/engine/apply-state.ts`.
 
 ## 5. Credential ids and node bindings
 
@@ -284,7 +285,7 @@ flowchart TD
     AP["apply: ids returned by<br/>pushToServer, deleted<br/>rows removed"]
     DEFS[("credential definitions, per env<br/>localId to id, name, updatedAt<br/>normalized on write: one<br/>localId per n8n id")]
     PF -->|"putDefinitions<br/>(replaces)"| DEFS
-    MW -->|"putDefinitions<br/>(merged: each entry rewritten to<br/>id + node reference name,<br/>stored updatedAt dropped)"| DEFS
+    MW -->|"putDefinitions<br/>(merged: each entry rewritten to<br/>id + node reference name<br/>(the stored name if the reference has none),<br/>stored updatedAt dropped)"| DEFS
     AP -->|"putDefinitions"| DEFS
 
     subgraph PLAN["plan: one credential file"]
@@ -327,7 +328,7 @@ flowchart TD
 - The pull writes the credential mapping with replace semantics from `listCredentials`, which only sees
   credentials the API key can reach; `mapCredentialsFromWorkflows` then merges every node reference back
   in, so a credential from another n8n project still resolves on export. The merge (`resolveCredLocalId`)
-  rewrites each existing entry to `{ id, name: node reference name }`, discarding the `updatedAt` the
+  rewrites each existing entry to `{ id, name }` (the node reference's name, falling back to the stored name when the reference has none), discarding the `updatedAt` the
   credential pull just stored, so the plan's "n8n updatedAt differs" check is inert after a pull for every
   node-referenced credential until n8c next pushes it (known bug, being fixed separately).
 - `apply` runs the credentials kind first and saves its mapping before workflows push, so
@@ -767,10 +768,44 @@ flowchart TB
     subgraph CTX["buildContext(cwd, kind, --env)"]
         CFG["read n8c.config.json<br/>env = --env, else defaultEnv,<br/>else default"] --> ENV["loadEnv: .env or .env.{env}<br/>copied into process.env,<br/>the shell wins"]
         ENV --> CS["createStore: sqlite (default)<br/>or mongodb (diagram 6)"]
-        CS --> NC["N8nClient(N8N_BASE, N8N_API_KEY,<br/>n8nProjectId), only when<br/>N8N_BASE is set"]
+        CFG --> VER["resolveN8nVersion(n8nVersion):<br/>runs unconditionally, even for<br/>DB-only commands"]
+        CS --> NC["createN8nClient(version, N8N_BASE,<br/>N8N_API_KEY, n8nProjectId),<br/>only when N8N_BASE is set<br/>(diagram 15)"]
+        VER --> NC
         NC --> EC["ctx: env, encrypted,<br/>encryptionKey, n8n,<br/>getDefinitions,<br/>promptContentsEnabled"]
     end
-    NC -->|"each request"| DBG["debugRequest + debugResponse<br/>printed only with --debug,<br/>request bodies redacted,<br/>n8n response bodies printed raw"]
+    NC -->|"each request"| DBG["debugRequest + debugResponse<br/>printed only with --debug,<br/>request bodies redacted,<br/>only error response bodies printed raw,<br/>success: status only"]
 ```
 
-**Source:** `src/cli.ts` (`buildProgram`, `isEntryPoint`, `writeTypesFile`, init / types / db / create / mcp handlers), `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/store/factory.ts` (`createStore`), `src/engine/init.ts` (`initProject`, `initDb`), `src/engine/agent-context.ts` (`renderAgentSection`, `upsertAgentsMd`), `src/engine/types-gen.ts` (`fetchCredentialTypes`, `jsonSchemaToTs`, `renderTypesFile`, `renderTsconfig`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/engine/generate.ts` (`createEntity`), `src/style.ts`, `src/debug.ts` (`redact`, `debugRequest`, `debugResponse`), `src/n8n.ts` (constructor, `req`).
+**Source:** `src/cli.ts` (`buildProgram`, `isEntryPoint`, `writeTypesFile`, init / types / db / create / mcp handlers), `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/store/factory.ts` (`createStore`), `src/engine/init.ts` (`initProject`, `initDb`), `src/engine/agent-context.ts` (`renderAgentSection`, `upsertAgentsMd`), `src/engine/types-gen.ts` (`fetchCredentialTypes`, `jsonSchemaToTs`, `renderTypesFile`, `renderTsconfig`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/engine/generate.ts` (`createEntity`), `src/style.ts`, `src/debug.ts` (`redact`, `debugRequest`, `debugResponse`), `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (constructor, `req`).
+
+## 15. n8n API clients (2.x / 3.x)
+
+n8c talks to n8n 2.x and 3.x only. `n8nVersion` in `n8c.config.json` picks the client class; the engine never
+branches on version, it calls the same method names on either.
+
+```mermaid
+flowchart TD
+    CFGV["n8c.config.json n8nVersion<br/>absent or null: 3"] --> RES["resolveN8nVersion"]
+    RES -->|"2 or 3 as a string or a number"| OKV["version 2 or 3"]
+    RES -->|"anything else, e.g. 1"| ERR(["throws: unsupported n8nVersion,<br/>n8c supports n8n 2 and 3"])
+    OKV --> CRE["createN8nClient(version, baseUrl,<br/>apiKey, fetch, projectId)"]
+    CRE -->|"version 2"| V2["N8nClientV2"]
+    CRE -->|"version 3"| V3["N8nClientV3<br/>extends N8nClientV2,<br/>empty seam"]
+    V3 -->|"extends"| V2
+    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>deleteWorkflow, archiveWorkflow,<br/>credential methods"]
+    V2 --> CW["createWorkflow: POST /workflows<br/>with projectId in the body,<br/>no transfer call"]
+    V2 --> AW["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish"]
+    V2 --> LW["listWorkflows: when a row has<br/>activeVersionId, active =<br/>activeVersionId is not null"]
+    V2 --> UW["updateWorkflow: PUT via base"]
+    UW --> R{"response"}
+    R -->|"ok"| DONE(["updated"])
+    R -->|"403"| DRAFT(["throws: n8n saved the new version<br/>as a DRAFT, the API key needs the<br/>workflow:activate scope"])
+    R -->|"other error"| RETH(["rethrown unchanged"])
+```
+
+- A PUT on a published workflow makes 2.x/3.x re-publish it. Without the `workflow:activate` scope n8n answers 403
+  but still keeps the new version as a draft, so the error says that, instead of a bare failure.
+- `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
+- `N8nClientV3` adds nothing today; it is the place to diverge from 2.x when 3.x does.
+
+**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).

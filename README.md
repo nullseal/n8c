@@ -65,7 +65,7 @@ only [`commander`](https://www.npmjs.com/package/commander) on top of built-in S
   built-in `node:sqlite`. Switch to **MongoDB** for a shared/team store or the runtime prompt-content
   feature (a replica set is recommended there so `apply` can snapshot atomically). See
   [Storage backends](#storage-backends).
-- **n8n** with the **Public API** enabled (API 1.1.x) and an API key.
+- **n8n** with the **Public API** enabled on **n8n 2.x or 3.x** (Public API v1) and an API key. See [n8n versions](#n8n-versions).
 
 ## Install
 
@@ -182,7 +182,7 @@ Override the prefix or any single name in `n8c.config.json`:
 `apply` executes the frozen plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan (files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one step, Terraform-style.
 
 - **Workflow `active` state is managed** — pulled, diffed, and reached via n8n's
-  `activate` / `deactivate` endpoints.
+  `publish` / `unpublish` endpoints on n8n 2.x / 3.x (see [n8n versions](#n8n-versions)).
 - **Credentials reconcile in place** via `PATCH`, using the server's `updatedAt` as a change token —
   no duplicates; missing-on-server is recreated.
 - **`plan --destroy`** marks workflows that exist on the server but not in your files; `apply`
@@ -366,6 +366,25 @@ By default n8c uses the API key's default (personal) project. If your workflows 
 project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project,
 creates new credentials in it, and transfers newly-created workflows into it.
 
+## n8n versions
+
+`n8nVersion` in `n8c.config.json` picks which n8n API n8c speaks: `"2"` or `"3"` (the number `2` / `3` also
+works). It defaults to `"3"` when absent, and `n8c init` writes it explicitly. Any other value, `"1"`
+included, stops every command with `unsupported n8nVersion "<v>" — n8c supports n8n 2 and 3`.
+
+**n8n 1.x is no longer supported.** The one upgrade caveat: an existing repo whose config has no
+`n8nVersion` keeps working as before, against an n8n 2.x or 3.x server (it is read as `"3"`).
+
+n8n 2.x and 3.x replaced "active" with **save vs publish**: saving a workflow stores a version, publishing
+makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes, and
+n8c reads a workflow as active when n8n reports an active version (`activeVersionId`), not the deprecated
+`active` field. Creating a workflow sends the project in the create call, so there is no separate transfer step.
+
+**API key scope.** Updating a published workflow makes n8n re-publish it, which needs an API key with the
+`workflow:activate` scope. Without it n8n answers 403 but **still keeps the new version as a draft**. n8c then
+reports that the new version was saved as a draft and the key lacks `workflow:activate`: grant the scope (or
+unpublish the workflow) and apply again.
+
 ## Storage backends
 
 Set the backend with `database` in `n8c.config.json`. **`sqlite` is the default** — `n8c init`
@@ -453,6 +472,7 @@ missing field like `allowedDomains`. The API key is never logged.
   "sqlite": { "file": "n8c.sqlite" },
   "root": "n8c",
   "defaultEnv": "default",
+  "n8nVersion": "3",           // "2" or "3" (default "3" when absent); 1.x is not supported
   "n8nProjectId": "",          // "" = the API key's default project
   "collectionPrefix": "n8c_",  // collectionPrefix/collections apply to the mongodb backend
   "collections": {
