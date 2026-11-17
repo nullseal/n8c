@@ -46,3 +46,10 @@ test('definitions round-trip per env', async () => {
 test('close() resolves — part of the Store contract', async () => {
   await assert.doesNotReject(() => new MemoryStore().close());
 });
+
+test('markActive and dropVersion on a kind that has no versions are harmless no-ops', async () => {
+  const s = new MemoryStore();
+  await s.withTransaction((session) => s.markActive('prompts', 'v1', session));
+  await s.withTransaction((session) => s.dropVersion('prompts', 'v1', session));
+  assert.deepEqual(await s.listVersions('prompts'), []);
+});
