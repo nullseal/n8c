@@ -245,6 +245,22 @@ test('known scanner limits: a regex right after ), or a division right after } o
   }
 });
 
+test('a scanner misread that hides a real export is caught by the final parse check', () => {
+  // The regex after ) is misread as division, so its backtick opens a phantom template
+  // that masks the real `export const g` on the next line.
+  const dir = unit({
+    'h.ts': 'export function f(s: string) { if (s) /`/.test(s); return 1; }\nexport const g = `x`;\n',
+    'code.ts': "import { f, g } from './h';\nreturn [{ json: { a: f('x'), g } }];\n",
+  });
+  try {
+    assert.throws(() => inlineUnit(dir), (e: any) => {
+      assert.match(e.message, new RegExp(`^unit ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: unsupported import/export form left after inlining \\(.+\\)$`));
+      assert.ok(e.cause);
+      return true;
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('TypeScript around strings and templates: types, generics and a non-null ! before a division are scanned before stripping', () => {
   const dir = unit({
     'h.ts': 'export const H: number = 4;\n',

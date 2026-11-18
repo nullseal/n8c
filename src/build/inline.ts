@@ -103,5 +103,12 @@ export function inlineUnit(unitDir: string): string {
   if (/(^|\n)\s*import\b/.test(code) || /(^|\n)\s*export\b/.test(code)) {
     throw new Error(`unit ${unitDir}: unsupported import/export form left after inlining`);
   }
+  // Backstop that does not rely on the scanner: a misread can hide a real import/export
+  // from codeOnly, but the parser still rejects one inside a function body.
+  try {
+    stripTypeScriptTypes('async function __n8c_check(){\n' + result + '\n}', { mode: 'strip' });
+  } catch (cause) {
+    throw new Error(`unit ${unitDir}: unsupported import/export form left after inlining (${(cause as Error).message})`, { cause });
+  }
   return result + '\n';
 }
