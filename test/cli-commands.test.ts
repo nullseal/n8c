@@ -397,13 +397,12 @@ test('apply warns when the post-apply baseline cannot be refreshed', async (t) =
 // ---------------------------------------------------------------- pull
 
 test('pull imports server workflows into files and DB', async (t) => {
-  // an agent node (→ extracted prompt) and a credential, so every kind has docs
+  // an agent node (→ extracted prompt) and a credential, so every kind is exported
   const wf = WF('W1', 'Main');
   wf.nodes.push({ id: 'n2', name: 'Agent', type: '@n8n/n8n-nodes-langchain.agent', typeVersion: 1, position: [200, 0], parameters: { options: { systemMessage: 'You are helpful.' } } } as any);
   const fake = await withFake({ workflows: [wf], credentials: [{ id: 'c1', name: 'Hdr', type: 'httpHeaderAuth', updatedAt: '2026-01-01T00:00:00Z' }] });
   const cap = capture(t);
   await runCli(['init']);
-  mkdirSync(join(cwd, 'n8c')); // root exists but holds no entities → no confirmation needed
   await runCli(['pull']);
   assert.ok(existsSync(wfMetaPath()), 'workflow dir written');
   assert.equal(JSON.parse(readFileSync(wfMetaPath(), 'utf8')).name, 'Main');
@@ -432,6 +431,27 @@ test('pull imports server workflows into files and DB', async (t) => {
   assert.match(cap.text(), /pulled workflow 1 — [0-9a-f]{8} — no changes/);
   const again = await openStore();
   try { assert.equal((await again.listVersions('workflows')).length, 1); } finally { await again.close(); }
+});
+
+test('types creates the n8c root when the project has none', async (t) => {
+  await withFake();
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  assert.ok(!existsSync(join(cwd, 'n8c')), 'fresh project has no root');
+  await runCli(['types']);
+  assert.ok(existsSync(join(cwd, 'n8c', 'n8c.types.ts')));
+  assert.match(cap.text(), /types written → /);
+});
+
+test('the first pull into a fresh project writes n8c.types.ts', async (t) => {
+  await withFake({ workflows: [WF('W1', 'Main')] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  assert.ok(!existsSync(join(cwd, 'n8c')), 'fresh project has no root');
+  await runCli(['pull']);
+  assert.ok(existsSync(join(cwd, 'n8c', 'n8c.types.ts')), 'types file written');
+  assert.doesNotMatch(cap.errText() + cap.text(), /types skipped/);
+  assert.match(cap.text(), /↳ types regenerated/);
 });
 
 test('pull --no-export fills the DB only', async (t) => {
@@ -552,7 +572,6 @@ test('types writes n8c.types.ts and tsconfig', async (t) => {
   });
   const cap = capture(t);
   await runCli(['init', '--db-only']);
-  mkdirSync(join(cwd, 'n8c')); // `types` writes into an existing root (pull/create make it)
   await runCli(['types']);
   const file = join(cwd, 'n8c', 'n8c.types.ts');
   assert.match(cap.text(), /types written → .*n8c\.types\.ts/);
@@ -571,7 +590,6 @@ test('types tolerates an n8n that cannot list credentials', async (t) => {
   await withFake({ fail: ['GET /api/v1/credentials'] });
   const cap = capture(t);
   await runCli(['init', '--db-only']);
-  mkdirSync(join(cwd, 'n8c')); // `types` writes into an existing root (pull/create make it)
   await runCli(['types']);
   assert.match(cap.text(), /types written → /);
   assert.ok(existsSync(join(cwd, 'n8c', 'n8c.types.ts')));
@@ -962,7 +980,6 @@ test('types skips server credentials that have no type', async (t) => {
   const fake = await withFake({ credentials: [{ id: 'c1', name: 'Typeless' }, { id: 'c2', name: 'H', type: 'httpHeaderAuth' }] });
   const cap = capture(t);
   await runCli(['init', '--db-only']);
-  mkdirSync(join(cwd, 'n8c'));
   await runCli(['types']);
   assert.match(cap.text(), /types written → /);
   const schemaCalls = fake.calls.filter((c) => c.url.startsWith('/api/v1/credentials/schema/')).map((c) => c.url);

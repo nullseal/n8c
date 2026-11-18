@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildContext } from './context.ts';
@@ -205,6 +205,8 @@ export function renderGeneration(g: Generation, full: boolean): string {
 // `data` fields. Returns the file path.
 async function writeTypesFile(store: any, ctx: any, root: string): Promise<string> {
   const { fetchCredentialTypes, renderTypesFile, renderTsconfig } = await import('./engine/types-gen.ts');
+  // `init` creates no root and pull writes types before any entity file, so a fresh project has none yet
+  mkdirSync(root, { recursive: true });
   const types = new Set<string>();
   for (const d of await store.getLive('credentials')) { const t = (d.body as any)?.type; if (t) types.add(String(t)); }
   try { for (const c of (await ctx.n8n?.listCredentials?.()) ?? []) if (c?.type) types.add(String(c.type)); } catch { /* not listable */ }
