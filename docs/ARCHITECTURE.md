@@ -863,10 +863,13 @@ flowchart TD
 - `POST /workflows/{id}/archive` exists only from 2.15.0; before that the route is missing and answers 404 although
   the workflow exists. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after a 404: if that also 404s the
   workflow is gone and the original error is rethrown; if it succeeds, the workflow is deleted permanently (on those
-  releases `DELETE` is a forced delete) and a warning line is printed; any other GET error is rethrown.
+  releases `DELETE` is a forced delete) and a warning line is printed; any other GET error is rethrown. A failing
+  fallback `DELETE` is rethrown wrapped (with `cause`) and never as a 404, because apply reads a 404 as "already deleted"
+  and the GET just proved the workflow exists.
 - A failed move rolls the create back (`createThenMove`): the new item is deleted, and the error names the kind, the
-  created id, the project and the likely missing scope (`workflow:move` / `credential:move`), keeping the transfer's
-  `status` and `cause`. Rolling back keeps a retried `apply` from creating a second copy; recording the mapping
+  created id and the project, keeping the transfer's `status` and `cause`. On a 403 it says the key most likely lacks
+  the scope (`workflow:move` / `credential:move`); on any other status (say 400 for a project that does not exist)
+  it says to check that the project exists and the key can access it. Rolling back keeps a retried `apply` from creating a second copy; recording the mapping
   instead would make the retry update an item stuck in the wrong project. If the delete fails as well, the error says
   the item was left in the key's personal project and must be removed by hand. A 400 "already owning it" is success.
 - n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.

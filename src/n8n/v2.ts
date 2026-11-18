@@ -37,7 +37,11 @@ export class N8nClientV2 extends N8nClientBase {
       await move(id, project);
     } catch (moveError: any) {
       if (moveError?.status === 400 && /already owning it/.test(moveError.message)) return created;
-      const what = `Created ${kind} ${id}, but moving it into n8nProjectId ${project} failed (${moveError?.message}). The API key most likely lacks the ${scope} scope.`;
+      // 403 is a missing scope; anything else (e.g. 400 for a project that does not exist) is not.
+      const hint = moveError?.status === 403
+        ? `The API key most likely lacks the ${scope} scope.`
+        : `Check that n8nProjectId ${project} exists and the API key can access it (moving needs the ${scope} scope).`;
+      const what = `Created ${kind} ${id}, but moving it into n8nProjectId ${project} failed (${moveError?.message}). ${hint}`;
       let message: string;
       try {
         await remove(id);
@@ -89,7 +93,16 @@ export class N8nClientV2 extends N8nClientBase {
       }
       // The workflow exists, so this n8n has no archive endpoint. DELETE there is a
       // forced, permanent delete; there is nothing softer on those releases.
-      const result = await this.deleteWorkflow(id);
+      let result;
+      try {
+        result = await this.deleteWorkflow(id);
+      } catch (deleteError: any) {
+        // The GET just proved the workflow exists, so a DELETE 404 must not reach apply,
+        // which reads a 404 as "already deleted". Re-wrap it without that status.
+        const err: any = new Error(`workflow ${id} could not be deleted after archive was unavailable: ${deleteError?.message}`, { cause: deleteError });
+        err.status = deleteError?.status === 404 ? 502 : deleteError?.status;
+        throw err;
+      }
       console.error(`  ⚠ workflow ${id} was permanently deleted because this n8n has no archive endpoint (n8n 2.15+ archives instead).`);
       return result;
     }

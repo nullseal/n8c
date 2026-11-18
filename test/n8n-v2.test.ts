@@ -136,6 +136,7 @@ for (const { kind, path, scope, create } of kinds) {
     assert.match(e.message, /PROJ1/);
     assert.ok(e.message.includes(scope), e.message);
     assert.equal(e.status, 403);
+    assert.match(e.message, new RegExp(`The API key most likely lacks the ${scope} scope`));
     assert.match(e.cause.message, /-> 403 Forbidden/);
     assert.equal(e.cause.status, 403);
   });
@@ -156,6 +157,9 @@ for (const { kind, path, scope, create } of kinds) {
     const e = await rejection(create(client));
     assert.equal(calls.at(-1)![0], 'DELETE');
     assert.equal(e.status, 400);
+    assert.match(e.message, /Check that n8nProjectId PROJ1 exists and the API key can access it/);
+    assert.ok(e.message.includes(`moving needs the ${scope} scope`), e.message);
+    assert.doesNotMatch(e.message, /most likely lacks/);
   });
 }
 
@@ -235,6 +239,19 @@ for (const [name, Cls] of classes) {
     assert.deepEqual(calls.map((c) => [c[0], c[1]]), [['POST', `${B}/W1/archive`], ['GET', `${B}/W1`], ['DELETE', `${B}/W1`]]);
     assert.deepEqual(errs, ['  ⚠ workflow W1 was permanently deleted because this n8n has no archive endpoint (n8n 2.15+ archives instead).']);
   });
+
+  for (const failing of [404, 500]) {
+    test(`${name}: archive 404 + GET 200 + fallback DELETE ${failing} rejects, not as a 404, and prints no deleted warning`, async (t) => {
+      const errs: string[] = [];
+      t.mock.method(console, 'error', (...a: unknown[]) => { errs.push(a.join(' ')); });
+      const { client } = make(Cls, (m, u) => (u.endsWith('/archive') ? { status: 404, text: '{"message":"Not Found"}' } : m === 'DELETE' ? { status: failing, text: '{"message":"nope"}' } : { body: { id: 'W1' } }));
+      const e = await rejection(client.archiveWorkflow('W1'));
+      assert.notEqual(e.status, 404);
+      assert.match(e.message, /W1/);
+      assert.equal(e.cause.status, failing);
+      assert.deepEqual(errs, []);
+    });
+  }
 
   test(`${name}: archive 404 + GET 404 rethrows the original archive error`, async () => {
     const { client, calls } = make(Cls, () => ({ status: 404, text: '{"message":"Not Found"}' }));
