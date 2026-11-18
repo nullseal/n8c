@@ -119,6 +119,44 @@ for (const { kind, path, scope, create } of kinds) {
     assert.deepEqual(await create(client), {});
     assert.deepEqual(calls, [['POST', API + path, { name: 'X' }]]);
   });
+
+  test(`V2: create ${kind} treats "already owning it" on the move as success and keeps the item`, async () => {
+    const text = `{"message":"You can't transfer a ${kind} into the project that's already owning it."}`;
+    const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 400, text } : { body: { id: 'NEW' } }), 'PROJ1');
+    assert.deepEqual(await create(client), { id: 'NEW' });
+    assert.deepEqual(calls.map((c) => c[0]), ['POST', 'PUT'], 'no DELETE');
+  });
+
+  test(`V2: create ${kind} whose move fails deletes the new item and throws naming id, project and ${scope}`, async () => {
+    const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 403, text: 'Forbidden' } : m === 'DELETE' ? { body: {} } : { body: { id: 'NEW' } }), 'PROJ1');
+    const e = await rejection(create(client));
+    assert.deepEqual(calls.map((c) => [c[0], c[1]]), [['POST', API + path], ['PUT', `${API}${path}/NEW/transfer`], ['DELETE', `${API}${path}/NEW`]]);
+    assert.match(e.message, new RegExp(`${kind}`));
+    assert.match(e.message, /NEW/);
+    assert.match(e.message, /PROJ1/);
+    assert.ok(e.message.includes(scope), e.message);
+    assert.equal(e.status, 403);
+    assert.match(e.cause.message, /-> 403 Forbidden/);
+    assert.equal(e.cause.status, 403);
+  });
+
+  test(`V2: create ${kind} whose move AND rollback fail reports the orphaned id with both errors`, async () => {
+    const { client } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 403, text: 'no scope' } : m === 'DELETE' ? { status: 500, text: 'boom' } : { body: { id: 'NEW' } }), 'PROJ1');
+    const e = await rejection(create(client));
+    assert.match(e.message, new RegExp(`${kind} NEW was left in the API key's personal project and must be removed by hand`));
+    assert.match(e.message, /403 no scope/);
+    assert.match(e.message, /500 boom/);
+    assert.ok(e.message.includes(scope));
+    assert.equal(e.status, 403);
+    assert.equal(e.cause.status, 403);
+  });
+
+  test(`V2: create ${kind} whose move fails with a 400 other than "already owning it" still rolls back`, async () => {
+    const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 400, text: 'bad project' } : { body: { id: 'NEW' } }), 'PROJ1');
+    const e = await rejection(create(client));
+    assert.equal(calls.at(-1)![0], 'DELETE');
+    assert.equal(e.status, 400);
+  });
 }
 
 test('V2: activate -> /activate, deactivate -> /deactivate', async () => {

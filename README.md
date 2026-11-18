@@ -391,7 +391,10 @@ By default n8c uses the API key's default (personal) project. If your workflows 
 project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project
 and creates new workflows and credentials in it. With `"n8nVersion": "3"` the create call names the
 project; with `"2"` n8c creates the item, then moves it to the project (`PUT …/transfer`), on every n8n 2.x.
-For that move the API key needs the `workflow:move` / `credential:move` scopes.
+For that move the API key needs the `workflow:move` / `credential:move` scopes. If the move fails (a missing
+scope, say), n8c deletes the new item again and the row fails with an error naming the scope, so re-running
+`apply` on the saved plan does not leave a second copy; if that delete fails too, the error names the item to
+remove by hand. A move into the project that already owns the item (the key's own personal project) counts as done.
 
 ## n8n versions
 

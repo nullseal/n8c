@@ -46,6 +46,13 @@ async function startFake() {
         workflows.push(w);
         return send(200, w);
       }
+      // n8n answers an item transfer 204 with no body
+      if (method === 'PUT' && /^\/api\/v1\/(workflows|credentials)\/[^/]+\/transfer$/.test(url)) return send(204, undefined);
+      if (method === 'DELETE' && url.startsWith('/api/v1/workflows/')) {
+        const i = workflows.findIndex((x) => x.id === url.split('/').pop());
+        if (i < 0) return send(404, { message: 'workflow not found' });
+        return send(200, workflows.splice(i, 1)[0]);
+      }
       if (method === 'PUT' && url.startsWith('/api/v1/workflows/')) {
         const w = workflows.find((x) => x.id === url.split('/').pop());
         if (!w) return send(404, { message: 'workflow not found' });
@@ -98,7 +105,7 @@ const ENV_KEYS = ['N8N_BASE', 'N8N_API_KEY', 'SQLITE_PATH', 'MONGO_URI', 'MONGO_
 //
 // The project holds one credential and one workflow whose node uses it: the shape
 // where the credential has to exist on n8n before the workflow can bind it.
-async function setup(t: TestContext) {
+async function setup(t: TestContext, config?: object) {
   const prevCwd = process.cwd();
   const prevEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   const dir = mkdtempSync(join(tmpdir(), 'n8c-apply-'));
@@ -116,6 +123,7 @@ async function setup(t: TestContext) {
   for (const k of ENV_KEYS) delete process.env[k]; // nothing may leak in from the developer's shell
   fake = await startFake();
   const root = join(dir, 'n8c');
+  if (config) writeFileSync(join(dir, 'n8c.config.json'), JSON.stringify(config));
   put(root, 'credentials', 'c1', 'API', { name: 'API', type: 'httpHeaderAuth' });
   put(root, 'workflows', 'w1', 'Main', {
     name: 'Main', connections: {},
@@ -170,6 +178,30 @@ test('retrying a partially-applied plan does not create its credential a second 
   const [cred] = fake.credentials;
   assert.deepEqual(fake.workflows.map((w) => w.nodes[0].credentials.httpHeaderAuth), [{ id: cred.id, name: 'API' }]);
   assert.deepEqual(await store.getDefinitions('default', 'credentials'), { c1: { id: cred.id, name: 'API', updatedAt: cred.updatedAt } });
+});
+
+test('a failed move into n8nProjectId (n8n 2.x) fails the row, leaves no workflow behind, and a retry of the saved plan creates exactly one', async (t) => {
+  const { root, fake, store, ctx } = await setup(t, { n8nVersion: '2', n8nProjectId: 'PROJ' });
+  const plan = await computePlan(store, root, ctx, { version: '0' });
+
+  // attempt 1: the credential is created and moved, then the key lacks workflow:move
+  fake.failing.add('PUT /api/v1/workflows/');
+  const first = await applyFromState(store, root, ctx, plan);
+  assert.deepEqual(first.applied!.ok, ['c1']);
+  assert.deepEqual(first.applied!.failed.map((f) => f.localId), ['w1']);
+  assert.match(first.applied!.failed[0].error, /workflow:move/);
+  assert.equal(fake.workflows.length, 0, 'the rollback deleted the half-created workflow');
+  assert.equal(fake.count('DELETE', '/api/v1/workflows/W1'), 1);
+  assert.equal(fake.count('PUT', '/api/v1/credentials/C1/transfer'), 1, 'the credential was moved into the project');
+  assert.deepEqual(await store.getDefinitions('default', 'workflows'), {}, 'no mapping recorded for the failed row');
+
+  // attempt 2: the same saved plan, after the key is fixed
+  fake.failing.clear();
+  const retry = await applyFromState(store, root, ctx, roundTrip(first));
+  assert.deepEqual(retry.applied!.ok, ['w1']);
+  assert.deepEqual(retry.applied!.failed, []);
+  assert.equal(fake.workflows.length, 1, 'exactly one workflow, no orphan from attempt 1');
+  assert.equal(fake.credentials.length, 1);
 });
 
 test('re-applying a plan that already applied in full writes nothing to n8n and records no new release', async (t) => {

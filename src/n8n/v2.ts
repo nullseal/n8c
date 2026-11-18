@@ -10,17 +10,45 @@ import { N8nClientBase } from './base.ts';
 // listWorkflows from here.
 export class N8nClientV2 extends N8nClientBase {
   async createWorkflow(body: unknown): Promise<{ id: string }> {
-    return this.createThenMove(await this.req('POST', '/api/v1/workflows', body), (id, project) => this.transferWorkflow(id, project));
+    return this.createThenMove('workflow', 'workflow:move', await this.req('POST', '/api/v1/workflows', body),
+      (id, project) => this.transferWorkflow(id, project), (id) => this.deleteWorkflow(id));
   }
   // POST /credentials honors projectId only from 2.18; earlier 2.x silently creates
   // the credential in the API key's personal project. Create, then move, on every 2.x.
   async createCredential(body: unknown): Promise<{ id: string; updatedAt?: string }> {
-    return this.createThenMove(await this.req('POST', '/api/v1/credentials', body), (id, project) => this.transferCredential(id, project));
+    return this.createThenMove('credential', 'credential:move', await this.req('POST', '/api/v1/credentials', body),
+      (id, project) => this.transferCredential(id, project), (id) => this.deleteCredential(id));
   }
   // Early 2.x rejects or ignores projectId in a create body, so a new item is created
-  // first, then moved to the configured project.
-  private async createThenMove<T extends { id?: unknown }>(created: T, move: (id: string, projectId: string) => Promise<unknown>): Promise<T> {
-    if (this.projectId && created?.id) await move(String(created.id), this.projectId);
+  // first, then moved to the configured project. A failed move rolls the create back:
+  // that keeps a retried `apply` from creating a second copy and never leaves an
+  // orphan silently. Recording the mapping instead would make the retry update an item
+  // stuck in the wrong project. n8n answers 400 when the item already belongs to the
+  // target project (the key's own personal project): there is nothing to move, so
+  // that counts as success.
+  private async createThenMove<T extends { id?: unknown }>(
+    kind: string, scope: string, created: T,
+    move: (id: string, projectId: string) => Promise<unknown>, remove: (id: string) => Promise<unknown>,
+  ): Promise<T> {
+    const project = this.projectId;
+    if (!project || !created?.id) return created;
+    const id = String(created.id);
+    try {
+      await move(id, project);
+    } catch (moveError: any) {
+      if (moveError?.status === 400 && /already owning it/.test(moveError.message)) return created;
+      const what = `Created ${kind} ${id}, but moving it into n8nProjectId ${project} failed (${moveError?.message}). The API key most likely lacks the ${scope} scope.`;
+      let message: string;
+      try {
+        await remove(id);
+        message = `${what} The new ${kind} was deleted again, so re-running \`n8c apply\` does not create a second copy.`;
+      } catch (removeError: any) {
+        message = `${what} Deleting it again also failed (${removeError?.message}): ${kind} ${id} was left in the API key's personal project and must be removed by hand.`;
+      }
+      const err: any = new Error(message, { cause: moveError });
+      err.status = moveError?.status;
+      throw err;
+    }
     return created;
   }
   async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/activate`); }

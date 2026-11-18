@@ -825,6 +825,11 @@ flowchart TD
     V3 -->|"extends"| V2
     V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>transferWorkflow, transferCredential,<br/>deleteWorkflow, archiveWorkflow,<br/>other credential methods"]
     V2 --> CW2["createWorkflow and createCredential:<br/>POST, body unchanged, then, when<br/>n8nProjectId is set and n8n<br/>returned an id: PUT /{kind}/{id}/transfer<br/>(workflow:move / credential:move)"]
+    CW2 --> MV{"the move"}
+    MV -->|"ok, or 400: the project<br/>already owns it"| MVOK(["returns the created item"])
+    MV -->|"any other error"| MVDEL["DELETE the new item"]
+    MVDEL -->|"ok"| MVERR(["throws: kind, id, project, missing scope,<br/>status and cause = the move error;<br/>no mapping recorded, a retry creates one copy"])
+    MVDEL -->|"fails too"| MVORP(["throws the same, plus: item left in the<br/>personal project, remove it by hand"])
     V2 --> AW2["activateWorkflow: POST activate<br/>deactivateWorkflow: POST deactivate"]
     V3 --> CW3["createWorkflow and createCredential,<br/>overridden: POST with projectId<br/>in the body when n8nProjectId<br/>is set, no transfer call"]
     V3 --> AW3["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish<br/>(both overridden)"]
@@ -853,6 +858,11 @@ flowchart TD
   the workflow exists. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after a 404: if that also 404s the
   workflow is gone and the original error is rethrown; if it succeeds, the workflow is deleted permanently (on those
   releases `DELETE` is a forced delete) and a warning line is printed; any other GET error is rethrown.
+- A failed move rolls the create back (`createThenMove`): the new item is deleted, and the error names the kind, the
+  created id, the project and the likely missing scope (`workflow:move` / `credential:move`), keeping the transfer's
+  `status` and `cause`. Rolling back keeps a retried `apply` from creating a second copy; recording the mapping
+  instead would make the retry update an item stuck in the wrong project. If the delete fails as well, the error says
+  the item was left in the key's personal project and must be removed by hand. A 400 "already owning it" is success.
 - n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.
 - A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
   `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and
@@ -863,4 +873,4 @@ flowchart TD
   example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
 
-**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`, `transferCredential`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
+**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`, `transferCredential`), `src/n8n/v2.ts` (`N8nClientV2`, `createThenMove`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
