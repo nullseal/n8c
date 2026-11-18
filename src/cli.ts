@@ -65,7 +65,7 @@ export function renderPlanOrphans(orphans: { kind: string; name: string; archive
   const lines = [danger(`\n! ${orphans.length} ${one ? 'entity exists' : 'entities exist'} on n8n/in the DB but ${one ? 'no longer has a file' : 'no longer have files'}:`)];
   for (const o of orphans) lines.push(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}${o.archived ? '  (already archived on n8n)' : ''}`));
   lines.push(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
-  if (orphans.some((o) => o.archived)) lines.push(dim('  an already-archived workflow is deleted permanently; a live one is archived first.'));
+  if (orphans.some((o) => o.archived)) lines.push(dim('  an already-archived workflow is deleted permanently; a live one is archived first (deleted permanently on n8n before 2.15, which has no archive endpoint).'));
   return lines.join('\n');
 }
 
@@ -346,7 +346,7 @@ export function buildProgram(): Command {
   program.command('apply')
     .description('execute the saved plan from `n8c plan` (push to n8n, then commit the DB)')
     .option('--force', 'compute a fresh plan and apply it in one step (no saved plan needed, like `terraform apply`)')
-    .option('--destroy', 'with --force: include workflow deletes (archive) for server-only workflows')
+    .option('--destroy', 'with --force: include workflow deletes for server-only workflows: archived (deleted permanently on n8n before 2.15, which has no archive endpoint)')
     .option('-m, --message <msg>', 'note recorded on the release (shown in `n8c list`)')
     .option('--no-verify', 're-check nothing on n8n before applying (not recommended)')
     .action(async (opts) => {

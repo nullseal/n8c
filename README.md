@@ -231,7 +231,7 @@ printing the new name and deploying the old one.
 archived workflow still has a local file whose content differs, `plan` skips it and
 prints a line naming it; unarchive it in n8n to let the change apply. An archived
 workflow whose local file you deleted is still removable: `plan --destroy` plans a
-hard delete for it (a live workflow is archived instead, which is recoverable).
+hard delete for it (a live workflow is archived instead, which is recoverable; on n8n 2.0 to 2.14 it is deleted permanently).
 
 Removing a file-less workflow therefore takes two rounds, by design: the first
 `--destroy` archives it, and because n8n keeps listing archived workflows, `plan`
