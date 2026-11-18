@@ -7,6 +7,9 @@ export class N8nClientV3 extends N8nClientV2 {
   async createWorkflow(body: unknown): Promise<{ id: string }> {
     return this.req('POST', '/api/v1/workflows', this.projectId ? { ...(body as any), projectId: this.projectId } : body);
   }
+  async createCredential(body: unknown): Promise<{ id: string; updatedAt?: string }> {
+    return this.req('POST', '/api/v1/credentials', this.projectId ? { ...(body as any), projectId: this.projectId } : body);
+  }
   async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/publish`); }
   async deactivateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/unpublish`); }
 }

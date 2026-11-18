@@ -4,6 +4,7 @@ import { N8nClientBase } from '../src/n8n/base.ts';
 
 class TestClient extends N8nClientBase {
   async createWorkflow(body: unknown): Promise<{ id: string }> { return this.req('POST', '/api/v1/workflows', body); }
+  async createCredential(body: unknown): Promise<{ id: string }> { return this.req('POST', '/api/v1/credentials', body); }
   async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/activate`); }
   async deactivateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/deactivate`); }
 }
@@ -112,8 +113,10 @@ test('credential verbs and paths', async () => {
   ]);
 });
 
-test('createCredential injects projectId when scoped', async () => {
-  const { client, calls } = make(() => ({ body: {} }), 'PROJ1');
-  await client.createCredential({ name: 'C' });
-  assert.deepEqual(calls[0][2], { name: 'C', projectId: 'PROJ1' });
+test('transferCredential PUTs destinationProjectId and resolves on 204', async () => {
+  const fetchImpl = async () => new Response(null, { status: 204 });
+  const calls: any[] = [];
+  const client = new TestClient('https://n8n.test', 'K', (async (u: string, init: any) => { calls.push([init.method, u, JSON.parse(init.body)]); return fetchImpl(); }) as any);
+  assert.equal(await client.transferCredential('9', 'DEST'), undefined);
+  assert.deepEqual(calls, [['PUT', 'https://n8n.test/api/v1/credentials/9/transfer', { destinationProjectId: 'DEST' }]]);
 });

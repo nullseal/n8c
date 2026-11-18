@@ -389,9 +389,9 @@ Use `--debug` to see the exact payload (with secrets redacted) if a credential i
 
 By default n8c uses the API key's default (personal) project. If your workflows live in a **team
 project**, set `n8nProjectId` in `n8c.config.json` — n8c then scopes `pull` / `plan` to that project
-and creates new credentials directly in it (on n8n 2.18 or later; before that n8n puts a new credential in the
-API key's personal project). New workflows end up there too: with `"n8nVersion": "3"` the
-create call names the project; with `"2"` n8c creates the workflow, then transfers it to the project.
+and creates new workflows and credentials in it. With `"n8nVersion": "3"` the create call names the
+project; with `"2"` n8c creates the item, then moves it to the project (`PUT …/transfer`), on every n8n 2.x.
+For that move the API key needs the `workflow:move` / `credential:move` scopes.
 
 ## n8n versions
 
@@ -402,10 +402,10 @@ included, makes these commands stop with `unsupported n8nVersion "<v>" — n8c s
 `create` never check it, and neither does `mcp` at startup (each MCP tool call runs one of those
 commands, so the call does).
 
-| `n8nVersion` | Use with | Activate / deactivate | New workflow when `n8nProjectId` is set |
+| `n8nVersion` | Use with | Activate / deactivate | New workflow or credential when `n8nProjectId` is set |
 |---|---|---|---|
-| `"2"` | n8n 2.x (minimums per feature below) | `POST /workflows/{id}/activate`, `…/deactivate` | `POST /workflows`, then `PUT /workflows/{id}/transfer` to the project |
-| `"3"` (default) | n8n 3.x, and n8n 2.33+ | `POST /workflows/{id}/publish`, `…/unpublish` | `POST /workflows` with `projectId` in the body, no transfer |
+| `"2"` | n8n 2.x (minimums per feature below) | `POST /workflows/{id}/activate`, `…/deactivate` | `POST`, then `PUT /{workflows,credentials}/{id}/transfer` to the project |
+| `"3"` (default) | n8n 3.x, and n8n 2.33+ | `POST /workflows/{id}/publish`, `…/unpublish` | `POST` with `projectId` in the body, no transfer |
 
 **n8n 1.x is no longer supported.** **Upgrading:** a repo pointed at an n8n 2.x server must set
 `"n8nVersion": "2"`. A config without `n8nVersion` is read as `"3"`, which uses endpoints that n8n 2.x
@@ -417,9 +417,7 @@ have no archive endpoint, so `apply` permanently deletes it there and prints a w
 a later release:
 
 - credential updates (`PATCH /credentials/{id}`): n8n 2.4.0 or later;
-- credential listing (`GET /credentials`, used by `pull`, `plan` and apply's drift check): n8n 2.8.0 or later;
-- creating a credential directly in `n8nProjectId`: n8n 2.18.0 or later (before that, new credentials land in
-  the API key's personal project).
+- credential listing (`GET /credentials`, used by `pull`, `plan` and apply's drift check): n8n 2.8.0 or later.
 
 n8n 2.x and 3.x replaced "active" with **save vs publish**: saving a workflow stores a version, publishing
 makes it the live one. n8c maps its `active` flag onto that: activating publishes, deactivating unpublishes

@@ -90,27 +90,36 @@ for (const [name, Cls] of classes) {
 // ---- V2: every n8n 2.x release. /publish, /unpublish and projectId on create only
 // arrived during 2.x, so V2 uses what 2.0 onward all serve.
 
-test('V2: createWorkflow POSTs the body unchanged, then transfers the new workflow to the project', async () => {
-  // n8n answers the transfer with 204 and no body.
-  const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 204 } : { body: { id: 'NEW', name: 'W' } }), 'PROJ1');
-  assert.deepEqual(await client.createWorkflow({ name: 'W' }), { id: 'NEW', name: 'W' });
-  assert.deepEqual(calls, [
-    ['POST', B, { name: 'W' }],
-    ['PUT', `${B}/NEW/transfer`, { destinationProjectId: 'PROJ1' }],
-  ]);
-});
+// Create-then-move, shared by both kinds (workflow / credential) on V2.
+const kinds = [
+  { kind: 'workflow', path: '/api/v1/workflows', scope: 'workflow:move', create: (c: N8nClientV2) => c.createWorkflow({ name: 'X' }) },
+  { kind: 'credential', path: '/api/v1/credentials', scope: 'credential:move', create: (c: N8nClientV2) => c.createCredential({ name: 'X' }) },
+];
+const API = 'https://n8n.test';
 
-test('V2: createWorkflow without projectId makes no transfer call', async () => {
-  const { client, calls } = make(N8nClientV2);
-  assert.deepEqual(await client.createWorkflow({ name: 'W' }), { id: 'NEW' });
-  assert.deepEqual(calls, [['POST', B, { name: 'W' }]]);
-});
+for (const { kind, path, scope, create } of kinds) {
+  test(`V2: create ${kind} POSTs the body unchanged, then moves it into the project`, async () => {
+    // n8n answers the transfer with 204 and no body.
+    const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 204 } : { body: { id: 'NEW', name: 'X' } }), 'PROJ1');
+    assert.deepEqual(await create(client), { id: 'NEW', name: 'X' });
+    assert.deepEqual(calls, [
+      ['POST', API + path, { name: 'X' }],
+      ['PUT', `${API}${path}/NEW/transfer`, { destinationProjectId: 'PROJ1' }],
+    ]);
+  });
 
-test('V2: createWorkflow makes no transfer call when n8n returns no id', async () => {
-  const { client, calls } = make(N8nClientV2, () => ({ body: {} }), 'PROJ1');
-  assert.deepEqual(await client.createWorkflow({ name: 'W' }), {});
-  assert.deepEqual(calls, [['POST', B, { name: 'W' }]]);
-});
+  test(`V2: create ${kind} without projectId makes no transfer call`, async () => {
+    const { client, calls } = make(N8nClientV2);
+    assert.deepEqual(await create(client), { id: 'NEW' });
+    assert.deepEqual(calls, [['POST', API + path, { name: 'X' }]]);
+  });
+
+  test(`V2: create ${kind} makes no transfer call when n8n returns no id`, async () => {
+    const { client, calls } = make(N8nClientV2, () => ({ body: {} }), 'PROJ1');
+    assert.deepEqual(await create(client), {});
+    assert.deepEqual(calls, [['POST', API + path, { name: 'X' }]]);
+  });
+}
 
 test('V2: activate -> /activate, deactivate -> /deactivate', async () => {
   const { client, calls } = make(N8nClientV2);
@@ -131,6 +140,18 @@ test('V3: createWorkflow without projectId sends the body unchanged', async () =
   const { client, calls } = make(N8nClientV3);
   await client.createWorkflow({ name: 'W' });
   assert.deepEqual(calls, [['POST', B, { name: 'W' }]]);
+});
+
+test('V3: createCredential puts projectId in the POST body and never calls /transfer', async () => {
+  const { client, calls } = make(N8nClientV3, undefined, 'PROJ1');
+  assert.deepEqual(await client.createCredential({ name: 'C' }), { id: 'NEW' });
+  assert.deepEqual(calls, [['POST', `${API}/api/v1/credentials`, { name: 'C', projectId: 'PROJ1' }]]);
+});
+
+test('V3: createCredential without projectId sends the body unchanged', async () => {
+  const { client, calls } = make(N8nClientV3);
+  await client.createCredential({ name: 'C' });
+  assert.deepEqual(calls, [['POST', `${API}/api/v1/credentials`, { name: 'C' }]]);
 });
 
 test('V3: activate -> /publish, deactivate -> /unpublish', async () => {

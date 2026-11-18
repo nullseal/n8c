@@ -1,19 +1,26 @@
 import { N8nClientBase } from './base.ts';
 
 // For n8n 2.x. Its workflow calls use only endpoints every 2.x release serves:
-// POST /activate and /deactivate, and create-then-transfer for a project.
-// (/publish, /unpublish and projectId on create arrived during 2.x: see v3.ts.)
-// Credential updates, credential listing and projectId on credential create need
-// later 2.x releases (2.4, 2.8, 2.18): see the README. Archive (2.15) has a
-// fallback below.
+// POST /activate and /deactivate, and create-then-transfer for a project, for
+// workflows and credentials alike (/transfer needs the workflow:move /
+// credential:move scope). (/publish, /unpublish and projectId on create arrived
+// during 2.x: see v3.ts.) Credential updates and credential listing need later 2.x
+// releases (2.4, 2.8): see the README. Archive (2.15) has a fallback below.
 // 2.x and 3.x share the draft/publish model, so V3 inherits updateWorkflow and
 // listWorkflows from here.
 export class N8nClientV2 extends N8nClientBase {
   async createWorkflow(body: unknown): Promise<{ id: string }> {
-    const created = await this.req('POST', '/api/v1/workflows', body);
-    // Early 2.x rejects projectId in the create body (400: the schema has no such
-    // field), so create first, then move it to the configured project.
-    if (this.projectId && created?.id) await this.transferWorkflow(String(created.id), this.projectId);
+    return this.createThenMove(await this.req('POST', '/api/v1/workflows', body), (id, project) => this.transferWorkflow(id, project));
+  }
+  // POST /credentials honors projectId only from 2.18; earlier 2.x silently creates
+  // the credential in the API key's personal project. Create, then move, on every 2.x.
+  async createCredential(body: unknown): Promise<{ id: string; updatedAt?: string }> {
+    return this.createThenMove(await this.req('POST', '/api/v1/credentials', body), (id, project) => this.transferCredential(id, project));
+  }
+  // Early 2.x rejects or ignores projectId in a create body, so a new item is created
+  // first, then moved to the configured project.
+  private async createThenMove<T extends { id?: unknown }>(created: T, move: (id: string, projectId: string) => Promise<unknown>): Promise<T> {
+    if (this.projectId && created?.id) await move(String(created.id), this.projectId);
     return created;
   }
   async activateWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/activate`); }

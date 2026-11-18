@@ -51,6 +51,7 @@ export abstract class N8nClientBase {
 
   // The version-specific verbs. Everything else is shared.
   abstract createWorkflow(body: unknown): Promise<{ id: string }>;
+  abstract createCredential(body: unknown): Promise<{ id: string; updatedAt?: string }>;
   abstract activateWorkflow(id: string): Promise<any>;
   abstract deactivateWorkflow(id: string): Promise<any>;
 
@@ -63,13 +64,11 @@ export abstract class N8nClientBase {
   async updateWorkflow(id: string, body: unknown): Promise<any> { return this.req('PUT', `/api/v1/workflows/${id}`, body); }
   // Moves a workflow to another project. n8n answers 204 with no body.
   async transferWorkflow(id: string, destinationProjectId: string): Promise<any> { return this.req('PUT', `/api/v1/workflows/${id}/transfer`, { destinationProjectId }); }
+  // Moves a credential to another project (n8n 2.0+, needs credential:move). 204, no body.
+  async transferCredential(id: string, destinationProjectId: string): Promise<any> { return this.req('PUT', `/api/v1/credentials/${id}/transfer`, { destinationProjectId }); }
   async deleteWorkflow(id: string): Promise<any> { return this.req('DELETE', `/api/v1/workflows/${id}`); }
   async archiveWorkflow(id: string): Promise<any> { return this.req('POST', `/api/v1/workflows/${id}/archive`); }
 
-  async createCredential(body: unknown): Promise<{ id: string; updatedAt?: string }> {
-    // POST /credentials defaults to the personal project — target the configured one.
-    return this.req('POST', '/api/v1/credentials', this.projectId ? { ...(body as any), projectId: this.projectId } : body);
-  }
   async listCredentials(): Promise<any[]> { return this.reqAll('/api/v1/credentials'); }
   // The JSON Schema for a credential type's `data` fields — the only way to learn
   // the field names, since n8n never returns credential data itself.

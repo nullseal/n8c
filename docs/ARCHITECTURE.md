@@ -273,7 +273,7 @@ flowchart TD
     HD -->|"no"| P0["PATCH name, type,<br/>isPartialData<br/>stored secret untouched"]
     HD -->|"yes"| SW1["sendWithSchemaDefaults:<br/>PATCH with data"]
     SW1 -->|"a required field<br/>has no default"| P1["PATCH again without data<br/>warning: secret NOT updated"]
-    UP -->|"no"| SW2["sendWithSchemaDefaults:<br/>POST name, type, data or empty,<br/>+ projectId when set"]
+    UP -->|"no"| SW2["sendWithSchemaDefaults:<br/>POST name, type, data or empty<br/>(project: see diagram 15)"]
     SW2 -->|"a required field<br/>has no default"| E3["row fails: a create<br/>needs complete data"]
     P0 --> RES["mapping entry:<br/>id, name, updatedAt"]
     SW1 --> RES
@@ -295,7 +295,7 @@ flowchart TD
 - The export decrypts the stored body but writes only `name` and `type`; restoring a version whose
   credential data is encrypted therefore needs the key.
 
-**Source:** `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/layout.ts` (`readEntity`), `src/engine/validate.ts` (`validateAll`, rule 4 and the key check), `src/engine/apply.ts` (`buildDocs`), `src/entities/credential.ts` (`beforeSave`, `beforePush`, `decryptCredentialData`, `pushToServer`, `sendWithSchemaDefaults`, `fillMissingFields`, `credentialFieldDefaults`, `explainCredentialError`, `pullFromServer`), `src/crypto.ts`, `src/engine/types-gen.ts` (`collectFieldDefaults`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/n8n/base.ts` (`createCredential`, `updateCredential`, `getCredentialSchema`), `src/engine/apply-state.ts`.
+**Source:** `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/layout.ts` (`readEntity`), `src/engine/validate.ts` (`validateAll`, rule 4 and the key check), `src/engine/apply.ts` (`buildDocs`), `src/entities/credential.ts` (`beforeSave`, `beforePush`, `decryptCredentialData`, `pushToServer`, `sendWithSchemaDefaults`, `fillMissingFields`, `credentialFieldDefaults`, `explainCredentialError`, `pullFromServer`), `src/crypto.ts`, `src/engine/types-gen.ts` (`collectFieldDefaults`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/n8n/base.ts` (`updateCredential`, `getCredentialSchema`), `src/n8n/v2.ts` and `src/n8n/v3.ts` (`createCredential`), `src/engine/apply-state.ts`.
 
 ## 5. Credential ids and node bindings
 
@@ -823,10 +823,10 @@ flowchart TD
     CRE -->|"version 2"| V2["N8nClientV2"]
     CRE -->|"version 3"| V3["N8nClientV3"]
     V3 -->|"extends"| V2
-    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>transferWorkflow, deleteWorkflow,<br/>archiveWorkflow, credential methods"]
-    V2 --> CW2["createWorkflow: POST /workflows,<br/>body unchanged, then, when<br/>n8nProjectId is set and n8n<br/>returned an id: transferWorkflow,<br/>PUT /workflows/{id}/transfer"]
+    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>transferWorkflow, transferCredential,<br/>deleteWorkflow, archiveWorkflow,<br/>other credential methods"]
+    V2 --> CW2["createWorkflow and createCredential:<br/>POST, body unchanged, then, when<br/>n8nProjectId is set and n8n<br/>returned an id: PUT /{kind}/{id}/transfer<br/>(workflow:move / credential:move)"]
     V2 --> AW2["activateWorkflow: POST activate<br/>deactivateWorkflow: POST deactivate"]
-    V3 --> CW3["createWorkflow, overridden:<br/>POST /workflows with projectId<br/>in the body when n8nProjectId<br/>is set, no transfer call"]
+    V3 --> CW3["createWorkflow and createCredential,<br/>overridden: POST with projectId<br/>in the body when n8nProjectId<br/>is set, no transfer call"]
     V3 --> AW3["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish<br/>(both overridden)"]
     V2 --> LW["listWorkflows, V3 inherits it:<br/>when a row has activeVersionId,<br/>active = activeVersionId is not null"]
     V2 --> ARC["archiveWorkflow, V3 inherits it:<br/>POST archive"]
@@ -843,12 +843,12 @@ flowchart TD
 ```
 
 - `/publish`, `/unpublish` and `projectId` on create only arrived during 2.x (publish and unpublish in 2.33), so
-  `N8nClientV2` activates, deactivates and assigns a project through `/activate`, `/deactivate` and `/transfer`,
-  which every 2.x release serves. `N8nClientV3` overrides `createWorkflow`, `activateWorkflow` and `deactivateWorkflow`
-  for n8n 3.x; the endpoints it uses also exist from 2.33.
+  `N8nClientV2` activates, deactivates and assigns a project through `/activate`, `/deactivate` and `/transfer`
+  (workflows and credentials), which every 2.x release serves. `N8nClientV3` overrides `createWorkflow`,
+  `createCredential`, `activateWorkflow` and `deactivateWorkflow` for n8n 3.x; the endpoints it uses also exist from 2.33.
 - Other features need a later 2.x release than the workflow calls do: credential updates (`PATCH /credentials/{id}`)
-  from 2.4.0, credential listing (`GET /credentials`) from 2.8.0, and `projectId` honored on credential create from 2.18.0 (before that, n8n puts a new credential in
-  the API key's personal project).
+  from 2.4.0 and credential listing (`GET /credentials`) from 2.8.0. `projectId` in a credential create body is honored only
+  from 2.18.0 (before that n8n puts the credential in the API key's personal project), which is why V2 creates then moves.
 - `POST /workflows/{id}/archive` exists only from 2.15.0; before that the route is missing and answers 404 although
   the workflow exists. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after a 404: if that also 404s the
   workflow is gone and the original error is rethrown; if it succeeds, the workflow is deleted permanently (on those
@@ -863,4 +863,4 @@ flowchart TD
   example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
 
-**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
+**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`, `transferCredential`), `src/n8n/v2.ts` (`N8nClientV2`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
