@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSy
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inlineUnit } from './build/inline.ts';
+import { codeOnly } from './build/code-only.ts';
 
 // True if the (type-stripped) source has real code beyond comments/whitespace.
 function hasRealCode(src: string): boolean {
@@ -80,7 +81,7 @@ export async function readEntity(root: string, kind: string, localId: string, co
       const codeFile = join(nodesDir, nid, 'code.ts');
       if (existsSync(codeFile)) {
         const src = readFileSync(codeFile, 'utf8');
-        if (/(^|\n)\s*export\b/.test(src)) {
+        if (/(^|\n)\s*export\b/.test(codeOnly(src))) {
           const val = await optionalImport(codeFile); // imports default, calls if fn
           if (typeof val === 'string' && hasRealCode(val)) parameters.jsCode = val;
         } else {

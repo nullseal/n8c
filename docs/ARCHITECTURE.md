@@ -669,7 +669,7 @@ flowchart TD
     UCODE --> BS
     BS -->|"no metadata.target"| THROW
     BS -->|"inlineUnit(unit dir)"| V
-    NCODE --> FORM{"readEntity: a line<br/>starting with export?"}
+    NCODE --> FORM{"readEntity: a code line<br/>starting with export?<br/>(codeOnly view)"}
     FORM -->|"yes: module form"| MOD["import the default export<br/>(a function is called),<br/>must be a string"]
     FORM -->|"no: raw Code-node body"| V
     subgraph INLINE["inlineUnit(dir)"]
@@ -701,9 +701,9 @@ flowchart TD
   offset and line break), the regexes match on that view, and `cut` removes each match from the real
   text at the same offsets. Import/export-like text inside them is kept byte-for-byte; `${…}`
   expressions count as code. Whether a `/` starts a regex literal is decided by the token before it;
-  the rule and the cases it misreads are commented in `src/build/inline.ts`.
+  the rule and the cases it misreads are commented in `src/build/code-only.ts`.
 
-**Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `codeOnly`, `cut`, `resolveDep`, `transformHelper`, `transformEntry`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
+**Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `cut`, `resolveDep`, `transformHelper`, `transformEntry`), `src/build/code-only.ts` (`codeOnly`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
 
 ## 12. Prompts
 

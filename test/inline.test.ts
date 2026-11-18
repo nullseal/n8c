@@ -187,7 +187,7 @@ test('a ${…} expression is still code: a dynamic import at the start of a line
 // real template's text would be scanned as code and the unit rejected.
 const AFTER_REGEX = 'const q = `a\nimport data from somewhere`;\nreturn [{ json: { q } }];\n';
 
-test('regex-literal rule: / starts a regex at the start, after an operator, ( [ , ! ? => ... or }, and after a keyword', () => {
+test('regex-literal rule: / starts a regex at the start, after an operator (division included), ( [ , ! ? => ... or }, and after a keyword', () => {
   for (const head of [
     '/`/.test("");',
     'const r = /`/;',
@@ -204,6 +204,7 @@ test('regex-literal rule: / starts a regex at the start, after an operator, ( [ 
     'const r = /[/`]/;',
     'const r = /[`/]/;',
     'const r = /\\/`/;',
+    'const d = 4 / /`/.source.length;',
   ]) {
     const src = head + '\n' + AFTER_REGEX;
     assert.equal(inlineBody(src), src, head);
