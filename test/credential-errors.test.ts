@@ -245,7 +245,7 @@ test('deleting a credential that is already gone on n8n (404) succeeds — delet
   ], s));
   const ctx = {
     env: 'default', encrypted: false, promptContentsEnabled: false,
-    n8n: { listWorkflows: async () => [], deleteCredential: async () => { throw new Error('n8n DELETE /api/v1/credentials/GONE -> 404 {"message":"Not Found"}'); } },
+    n8n: { listWorkflows: async () => [], deleteCredential: async () => { throw Object.assign(new Error('n8n DELETE /api/v1/credentials/GONE -> 404 {"message":"Not Found"}'), { status: 404 }); } },
     getDefinitions: (k: string) => store.getDefinitions('default', k),
   } as any;
   const state: State = {

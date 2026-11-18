@@ -86,8 +86,9 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
               } else await ctx.n8n!.deleteCredential?.(n8nId);
             } catch (e: any) {
               // Already gone on n8n (deleted here earlier, or by hand) — deleting is
-              // idempotent, so a 404 means the desired end state is already true.
-              if (!String(e?.message ?? e).includes('404')) throw e;
+              // idempotent, so an HTTP 404 means the desired end state is already true. Only the
+              // status counts: the message also carries the request path and response body.
+              if (e?.status !== 404) throw e;
             }
           }
           delete mapping[r.localId];

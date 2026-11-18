@@ -287,16 +287,27 @@ test('a prompt delete needs no n8n: it only drops the live doc', async (t) => {
   assert.deepEqual(await store.getLive('prompts'), []);
 });
 
-test('a credential delete rejected with a non-Error 404 still counts as already gone', async (t) => {
+test('a delete whose error has status 404 is treated as already gone', async (t) => {
   const { root, store, ctx } = await setup(t);
   await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c2: { id: 'C7', name: 'Old' } }, s));
   const state = savedState([{ kind: 'credentials', localId: 'c2', name: 'Old', action: 'delete', fromChecksum: 'x', toChecksum: null }]);
-  // defensive fallback: a rejection that is a bare string has no .message
-  const n8n = { deleteCredential: async () => { throw 'DELETE /api/v1/credentials/C7 -> 404'; } } as any;
+  const n8n = { deleteCredential: async () => { throw Object.assign(new Error('n8n DELETE /api/v1/credentials/C7 -> 404 {"message":"Not Found"}'), { status: 404 }); } } as any;
 
   const done = await applyFromState(store, root, { ...ctx, n8n }, state);
   assert.deepEqual(done.applied!.ok, ['c2']);
   assert.deepEqual(await store.getDefinitions('default', 'credentials'), {});
+});
+
+test('a delete error that only mentions 404 in its text but has status 500 fails the row', async (t) => {
+  const { root, store, ctx } = await setup(t);
+  await store.withTransaction((s) => store.putDefinitions('default', 'credentials', { c2: { id: 'C404', name: 'Old' } }, s));
+  const state = savedState([{ kind: 'credentials', localId: 'c2', name: 'Old', action: 'delete', fromChecksum: 'x', toChecksum: null }]);
+  const n8n = { deleteCredential: async () => { throw Object.assign(new Error('n8n DELETE /api/v1/credentials/C404 -> 500 {"message":"boom"}'), { status: 500 }); } } as any;
+
+  const done = await applyFromState(store, root, { ...ctx, n8n }, state);
+  assert.deepEqual(done.applied!.ok, []);
+  assert.equal(done.applied!.failed.length, 1);
+  assert.deepEqual(await store.getDefinitions('default', 'credentials'), { c2: { id: 'C404', name: 'Old' } }, 'mapping kept');
 });
 
 // --- the same two scenarios through the CLI, in-process ----------------------
