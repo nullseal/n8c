@@ -673,7 +673,7 @@ flowchart TD
     FORM -->|"yes: module form"| MOD["import the default export<br/>(a function is called),<br/>must be a string"]
     FORM -->|"no: raw Code-node body"| V
     subgraph INLINE["inlineUnit(dir)"]
-        V["visit code.ts depth-first,<br/>parseImports per file"]
+        V["visit code.ts depth-first,<br/>parseImports per file<br/>on its codeOnly view"]
         V -->|"relative named import"| RD["resolveDep: the path if it<br/>ends in .ts, else path + .ts,<br/>else the path"]
         RD -->|"visit the helper first"| V
         V --> ORD["helpers in<br/>dependency-first order"]
@@ -683,7 +683,7 @@ flowchart TD
     end
     V -->|"bare package specifier,<br/>default or namespace import,<br/>or an import cycle"| THROW["throw: fail loud"]
     RD -->|"not found"| THROW
-    JOIN -->|"an import or<br/>export left over"| THROW
+    JOIN -->|"an import or export left<br/>in the codeOnly view"| THROW
     JOIN -->|"returned to buildSources"| BOUT["dist/{unit}.js written,<br/>codeByNode[target] = the JS"]
     JOIN -->|"returned to readEntity,<br/>real code only"| PARAM["node parameters.jsCode"]
     MOD -->|"real code only"| PARAM
@@ -696,8 +696,14 @@ flowchart TD
   calls `buildSources` itself, so all three see the same inlined code. Only exploded workflows apply
   it, and `validateAll` does not see it.
 - "Real code" means something other than comments and whitespace remains.
+- Inside `inlineUnit`, import parsing, the import and export cuts and the leftover check skip comments,
+  string and regex literals and template-literal text: `codeOnly` blanks those to spaces (keeping every
+  offset and line break), the regexes match on that view, and `cut` removes each match from the real
+  text at the same offsets. Import/export-like text inside them is kept byte-for-byte; `${…}`
+  expressions count as code. Whether a `/` starts a regex literal is decided by the token before it;
+  the rule and the cases it misreads are commented in `src/build/inline.ts`.
 
-**Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `resolveDep`, `transformHelper`, `transformEntry`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
+**Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `codeOnly`, `cut`, `resolveDep`, `transformHelper`, `transformEntry`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
 
 ## 12. Prompts
 
