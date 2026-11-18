@@ -86,7 +86,11 @@ export const workflow: EntityDescriptor = {
       // unchanged & already deployed → keep the id, skip the re-PUT (which republishes).
       if (existingId && status?.[d.localId] === 'identical') { mapping[d.localId] = existingId; continue; }
       const remapped = await this.beforePush!(ctx, d.body, defs) as any;
-      if (existingId) { await ctx.n8n!.updateWorkflow(existingId, remapped); mapping[d.localId] = existingId; }
+      // staticData is n8n's live runtime state (polling cursors, dedupe keys). n8n's
+      // update persists it when sent (WorkflowService.update lists 'staticData' in
+      // fieldsToUpdate), so re-sending the last-pulled copy would rewind it. Send it on
+      // create only: a from-scratch deploy or restore stays seeded with the pulled state.
+      if (existingId) { delete remapped.staticData; await ctx.n8n!.updateWorkflow(existingId, remapped); mapping[d.localId] = existingId; }
       else { const created = await ctx.n8n!.createWorkflow(remapped); mapping[d.localId] = String(created.id); } // deploy from scratch
     }
     return mapping;

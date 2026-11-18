@@ -84,3 +84,26 @@ test('workflow.pullFromServer carries description, nodeGroups, staticData and pi
   assert.deepEqual(row.body.staticData, { s: 1 });
   assert.deepEqual(row.body.pinData, { p: 1 });
 });
+
+test('workflow.pushToServer: update PUT omits staticData, create POST keeps it', async () => {
+  const updates: any[] = [];
+  const creates: any[] = [];
+  const c = {
+    ...ctx,
+    getDefinitions: async (k: string) => (k === 'workflows' ? { W1: 'N1' } : {}),
+    n8n: {
+      updateWorkflow: async (id: string, b: any) => { updates.push({ id, b }); },
+      createWorkflow: async (b: any) => { creates.push(b); return { id: 'NEW' }; },
+    },
+  } as any;
+  const body = { name: 'w', nodes: [], connections: {}, settings: {}, staticData: { cursor: 5 } };
+  const docs = [
+    { localId: 'W1', name: 'w', body, checksum: 'x' },
+    { localId: 'W2', name: 'w2', body, checksum: 'y' },
+  ];
+  const mapping = await workflow.pushToServer!(c, docs, {});
+  assert.deepEqual(mapping, { W1: 'N1', W2: 'NEW' });
+  assert.equal(updates.length, 1);
+  assert.ok(!('staticData' in updates[0].b), 'update must not rewind live trigger state');
+  assert.deepEqual(creates[0].staticData, { cursor: 5 });
+});

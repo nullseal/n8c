@@ -209,9 +209,10 @@ A workflow is `changed` when any of these differ from the server: a node, the
 `settings` key your files actually set. `plan` names the parts that differ in
 parentheses, e.g. `~ workflow  [id]  MKD_ Orders  (name, load_prompts)`.
 
-Two things are deliberately never a reason to plan an update, though both are still
-pushed: `staticData` (n8n's runtime scratch space, which it rewrites between
-executions) and `settings` keys your files leave unset (n8n fills in its own
+Two things are deliberately never a reason to plan an update: `staticData` (n8n's
+runtime scratch space, which it rewrites between executions; n8c sends it only when
+it creates a workflow, never on an update, so an update cannot rewind live trigger
+state) and `settings` keys your files leave unset (n8n fills in its own
 defaults, and diffing those would leave every workflow permanently "changed").
 
 ### Renaming a workflow

@@ -50,8 +50,8 @@ export function normalizeCredentials(body: any, credMap: Record<string, string>)
 
 // Everything a push sends EXCEPT `nodes` (diffNodes covers those on its own) and
 // `staticData` — n8n's runtime scratch space, which $getWorkflowStaticData rewrites
-// between executions. staticData is still PUSHED; it just cannot be a reason to
-// plan an update, or every workflow that uses it would drift on its own schedule.
+// between executions. staticData is sent on create only (never on update) and cannot be a
+// reason to plan an update, or every workflow that uses it would drift on its own schedule.
 // The rest is taken from the entity's own writable whitelist so the two can never
 // fall out of step: a field n8c pushes but does not diff is a change that applies
 // silently, which is exactly how renaming a workflow came to be a no-op.
