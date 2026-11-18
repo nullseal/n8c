@@ -454,6 +454,45 @@ test('the first pull into a fresh project writes n8c.types.ts', async (t) => {
   assert.match(cap.text(), /↳ types regenerated/);
 });
 
+async function generationCount(): Promise<number> {
+  const store = await openStore();
+  try {
+    const perKind = [];
+    for (const kind of ['workflows', 'prompts', 'credentials']) perKind.push({ kind, versions: await store.listVersions(kind) });
+    return groupByGeneration(perKind).length;
+  } finally { await store.close(); }
+}
+
+test('a pull with always-empty credentials and prompts creates no generation the second time', async (t) => {
+  await withFake({ workflows: [WF('W1', 'Main')] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  await runCli(['pull']);
+  assert.equal(await generationCount(), 1);
+  cap.out.length = 0;
+  await runCli(['pull', '-y']);
+  assert.match(cap.text(), /= nothing changed — no new generation/);
+  assert.equal(await generationCount(), 1, 'generations unchanged');
+});
+
+test('a kind that became empty is one change, then pulls report nothing changed', async (t) => {
+  const fake = await withFake({ workflows: [WF('W1', 'Main')], credentials: [{ id: 'c1', name: 'Hdr', type: 'httpHeaderAuth', updatedAt: '2026-01-01T00:00:00Z' }] });
+  const cap = capture(t);
+  await runCli(['init', '--db-only']);
+  await runCli(['pull']);
+  assert.equal(await generationCount(), 1);
+  fake.credentials.length = 0;
+  cap.out.length = 0;
+  await runCli(['pull', '-y']);
+  assert.match(cap.text(), /pulled credential 0 — [0-9a-f]{8} — changed/);
+  assert.match(cap.text(), /✓ generation [0-9a-f]{8} created/);
+  assert.equal(await generationCount(), 2, 'exactly one new generation');
+  cap.out.length = 0;
+  await runCli(['pull', '-y']);
+  assert.match(cap.text(), /= nothing changed — no new generation/);
+  assert.equal(await generationCount(), 2, 'no further generation');
+});
+
 test('pull --no-export fills the DB only', async (t) => {
   await withFake({ workflows: [WF('W1', 'Main')] });
   const cap = capture(t);

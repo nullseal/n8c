@@ -42,6 +42,15 @@ export async function pullEntity(
   return { kind: desc.kind, count: docs.length, checksum: checksum(docs.map((d) => d.checksum).sort()), docs };
 }
 
+// Did this pull change `result.kind`, relative to its member in the active
+// generation? A kind that is empty and has no member (a project with no credentials,
+// say) is unchanged — commitPullGeneration never snapshots an empty kind, so it can
+// never have a member, and comparing against `undefined` would report a change on
+// every pull. A kind that became empty (member exists, no docs now) IS changed.
+export function isKindChanged(member: { checksum: string } | undefined, result: PullResult): boolean {
+  return member ? member.checksum !== result.checksum : result.docs.length > 0;
+}
+
 // Commit one pull as a single RELEASE: every non-empty kind is snapshotted under
 // the SAME generation versionId and marked active — mirroring `apply`, so a pull
 // produces one coherent generation instead of a per-kind version each.
@@ -49,7 +58,13 @@ export async function commitPullGeneration(
   store: Store, versionId: string, results: PullResult[], message?: string,
 ): Promise<void> {
   for (const r of results) {
-    if (!r.docs.length) continue; // nothing to snapshot for an empty kind
+    // An empty kind is never snapshotted: exportVersion throws "version not found" for
+    // a version with no docs, so `restore` would fail on an empty member, and `apply`
+    // skips empty kinds the same way. Consequence: when a kind BECOMES empty the new
+    // generation lacks it and its active pointer stays on the older generation; the
+    // next pull then sees no member and no docs, so isKindChanged is false and no
+    // further generation is created.
+    if (!r.docs.length) continue;
     await store.withTransaction(async (session: Session) => {
       await store.createSnapshot(r.kind, versionId, r.docs, r.checksum, session, message);
       await store.markActive(r.kind, versionId, session);

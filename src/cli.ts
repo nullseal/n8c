@@ -478,7 +478,8 @@ export function buildProgram(): Command {
         // Phase 2 — commit ONE generation for the whole pull (like apply), but only
         // if something actually differs from the currently-active generation.
         const activeGen = groupByGeneration(await readGenerations(store, ctx)).find((x) => x.active);
-        const changedKinds = pulled.filter((p) => activeGen?.members.find((m) => m.kind === p.kind)?.checksum !== p.result.checksum);
+        const { isKindChanged } = await import('./engine/pull.ts');
+        const changedKinds = pulled.filter((p) => isKindChanged(activeGen?.members.find((m) => m.kind === p.kind), p.result));
         for (const p of pulled) {
           const changed = changedKinds.includes(p);
           console.log(`pulled ${p.g} ${p.result.count} — ${hash(p.result.checksum.slice(0, 8))} — ${changed ? 'changed' : dim('no changes')}`);

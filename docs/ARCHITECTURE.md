@@ -498,15 +498,17 @@ flowchart TD
 
 Every apply that changes something, and every pull that finds a difference, writes one generation: all
 kinds snapshotted under one `versionId`. `list`, `restore` and `drop` address generations, never a
-single kind.
+single kind. A kind that is empty is never snapshotted, so a pull compares each kind with its member
+in the newest generation that has one: an always-empty kind (no member, no docs) is unchanged, while a
+kind that became empty (member, no docs now) is changed and costs exactly one generation.
 
 ```mermaid
 flowchart TD
     subgraph WRITE["Writing a generation"]
         AP["apply: applyFromState<br/>starts"] --> G1["generation = nextVersionId<br/>minted at apply start,<br/>used only if something changed<br/>(ISO timestamp, strictly increasing)"]
         G1 --> SNAP["each kind with live docs:<br/>createSnapshot(kind, generation,<br/>live docs, bundle checksum,<br/>message) + markActive"]
-        PL["pull: a kind's checksum<br/>differs from the<br/>active generation"] --> G2["commitPullGeneration<br/>(nextVersionId)"]
-        G2 --> SNAP2["each non-empty pulled kind:<br/>createSnapshot + markActive"]
+        PL["pull: isKindChanged for a kind<br/>(member checksum differs, or<br/>no member and it has docs)"] --> G2["commitPullGeneration<br/>(nextVersionId)"]
+        G2 --> SNAP2["each non-empty pulled kind:<br/>createSnapshot + markActive<br/>(an empty kind is skipped:<br/>exportVersion cannot read<br/>an empty version)"]
     end
     subgraph LIST["n8c list"]
         RG["readGenerations: listVersions<br/>per kind (promptContents<br/>only when enabled)"] --> GB["groupByGeneration:<br/>group by versionId,<br/>members = kind + checksum,<br/>active if any member is,<br/>first message wins"]
@@ -530,7 +532,7 @@ flowchart TD
     end
 ```
 
-**Source:** `src/engine/apply-state.ts` (pass 2), `src/engine/pull.ts` (`commitPullGeneration`), `src/version.ts` (`nextVersionId`), `src/cli.ts` (`readGenerations`, `groupByGeneration`, `resolveGenerationRef`, `renderGeneration`; list, pull, restore and drop handlers), `src/engine/list.ts` (`listEntity`), `src/engine/transfer.ts` (`exportVersion`), `src/store/*` (`createSnapshot`, `markActive`, `listVersions`, `getVersion`, `dropVersion`).
+**Source:** `src/engine/apply-state.ts` (pass 2), `src/engine/pull.ts` (`isKindChanged`, `commitPullGeneration`), `src/version.ts` (`nextVersionId`), `src/cli.ts` (`readGenerations`, `groupByGeneration`, `resolveGenerationRef`, `renderGeneration`; list, pull, restore and drop handlers), `src/engine/list.ts` (`listEntity`), `src/engine/transfer.ts` (`exportVersion`), `src/store/*` (`createSnapshot`, `markActive`, `listVersions`, `getVersion`, `dropVersion`).
 
 ## 9. Drift gate
 
@@ -747,13 +749,13 @@ flowchart TD
         W --> PR --> PC --> CR
     end
     CR --> MAP["mapCredentialsFromWorkflows<br/>listWorkflows, node credential<br/>refs merged into the<br/>credential definitions<br/>(merge drops stored updatedAt)"]
-    MAP --> CHG{"Phase 2: a kind's checksum<br/>differs from its<br/>active-generation member?"}
-    CHG -->|"yes"| GEN["commitPullGeneration<br/>(nextVersionId):<br/>createSnapshot + markActive<br/>for every non-empty kind"]
-    CHG -->|"no"| SAME["nothing changed,<br/>no new generation"]
+    MAP --> CHG{"Phase 2: isKindChanged for a kind?<br/>member exists and its checksum differs,<br/>or no member and the kind has docs<br/>(an always-empty kind is unchanged)"}
+    CHG -->|"some kind"| GEN["commitPullGeneration<br/>(nextVersionId):<br/>createSnapshot + markActive<br/>for every non-empty kind"]
+    CHG -->|"no kind"| SAME["nothing changed,<br/>no new generation"]
     GEN --> EXP{"Phase 3:<br/>--no-export?"}
     SAME --> EXP
     EXP -->|"yes"| DBONLY["done, DB only"]
-    EXP -->|"no"| TYPES["writeTypesFile:<br/>n8c/n8c.types.ts,<br/>tsconfig.json when missing<br/>(a failure is reported,<br/>pull goes on)"]
+    EXP -->|"no"| TYPES["writeTypesFile: creates the<br/>n8c root if missing, writes<br/>n8c/n8c.types.ts,<br/>tsconfig.json when missing<br/>(a failure is reported,<br/>pull goes on)"]
     TYPES --> EACH["exportDocs for each kind<br/>that has docs (a failure is<br/>reported, other kinds go on)"]
     EACH --> PRUNE["remove entity folders<br/>whose localId is not<br/>in the pulled set"]
     PRUNE --> KIND{"kind"}
@@ -765,7 +767,7 @@ flowchart TD
 - A kind whose pulled set is empty is not exported, so its old folders are not pruned.
 - Prompt-contents is skipped on sqlite (diagram 12).
 
-**Source:** `src/cli.ts` (pull handler, `dirHasEntities`, `writeTypesFile`, `printSecretWarnings`), `src/engine/pull.ts` (`pullEntity`, `commitPullGeneration`), `src/engine/pull-prompts.ts`, `src/engine/environment.ts` (`mapCredentialsFromWorkflows`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/secret-scan.ts` (`scanWorkflowSecrets`), `src/layout.ts` (`writeEntity`), `src/engine/types-gen.ts`.
+**Source:** `src/cli.ts` (pull handler, `dirHasEntities`, `writeTypesFile`, `printSecretWarnings`), `src/engine/pull.ts` (`pullEntity`, `isKindChanged`, `commitPullGeneration`), `src/engine/pull-prompts.ts`, `src/engine/environment.ts` (`mapCredentialsFromWorkflows`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/secret-scan.ts` (`scanWorkflowSecrets`), `src/layout.ts` (`writeEntity`), `src/engine/types-gen.ts`.
 
 ## 14. CLI commands and context
 

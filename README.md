@@ -121,7 +121,8 @@ n8n ID is resolved from the DB mapping at push time, so the same files deploy an
 
 ### Typed authoring
 
-`n8c types` (also run automatically by `pull`, except with `--no-export`) generates
+`n8c types` (also run automatically by `pull`, except with `--no-export`; it creates the `n8c/`
+directory if it does not exist yet, so the first pull in a fresh project works) generates
 **`n8c/n8c.types.ts`** so your editor knows each entity's shape — and, crucially, each credential's
 **real `data` field names**, fetched from your instance via n8n's `GET /credentials/schema/{type}`.
 Since n8n never returns credential data, this is the only way to know them; without it a wrong key
@@ -301,7 +302,9 @@ the DB only. When it does write:
 
 - **One pull = one generation**, exactly like an apply: every kind is snapshotted under the *same*
   generation id and marked active, so the timelines never fragment. If nothing differs from the
-  active generation, no new one is created (an unchanged re-pull adds nothing).
+  active generation, no new one is created (an unchanged re-pull adds nothing). A kind with nothing
+  in it (no credentials, say) is never snapshotted: if it was always empty it counts as unchanged, and
+  if it just became empty that pull creates one generation, after which it is unchanged again.
 - It writes files that **mirror the pulled set exactly**: an entity directory whose id is no longer
   in the pulled set is removed, so orphaned dirs from earlier pulls never linger as phantom
   "create" entries in `plan`. The exception is a kind that pulls **nothing**: its directories are
