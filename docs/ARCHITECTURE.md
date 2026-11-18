@@ -460,9 +460,9 @@ classDiagram
   `normalizeMapping`), so each n8n id maps to exactly one localId, UUID-shaped preferred.
 - `PREFIX` is `collectionPrefix` (default `n8c_`); any single name can be overridden through
   `collections` (`resolveCollections`). The sqlite table names are fixed.
-- `sqlite-quiet.ts` is imported before `node:sqlite` loads (and by `src/build/inline.ts` before its first `stripTypeScriptTypes` call), to silence exactly those two experimental warnings; every other warning passes through.
+- `quiet-warnings.ts` is imported before `node:sqlite` loads (and by `src/build/inline.ts` before its first `stripTypeScriptTypes` call), to silence exactly those two experimental warnings; every other warning passes through.
 
-**Source:** `src/store/store.ts`, `src/store/factory.ts` (`createStore`), `src/store/mongo.ts`, `src/store/sqlite.ts`, `src/store/sqlite-quiet.ts`, `src/build/inline.ts`, `src/store/memory.ts`, `src/store/collections.ts` (`resolveCollections`, `collectionForKind`), `src/store/live-doc.ts` (`liveStorageDoc`), `src/store/version-docs.ts` (`selectVersionDocs`), `src/engine/cred-map.ts` (`mappingRows`, `normalizeMapping`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/context.ts`.
+**Source:** `src/store/store.ts`, `src/store/factory.ts` (`createStore`), `src/store/mongo.ts`, `src/store/sqlite.ts`, `src/quiet-warnings.ts`, `src/build/inline.ts`, `src/store/memory.ts`, `src/store/collections.ts` (`resolveCollections`, `collectionForKind`), `src/store/live-doc.ts` (`liveStorageDoc`), `src/store/version-docs.ts` (`selectVersionDocs`), `src/engine/cred-map.ts` (`mappingRows`, `normalizeMapping`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/context.ts`.
 
 ## 7. Workflow layouts
 

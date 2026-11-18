@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import '../src/store/sqlite-quiet.ts';
+import '../src/quiet-warnings.ts';
 
 async function warningsFor(msg: any): Promise<string[]> {
   const seen: string[] = [];
@@ -20,13 +20,13 @@ async function warningsFor(msg: any): Promise<string[]> {
   return seen;
 }
 
-test('sqlite-quiet swallows only the SQLite experimental warning', async () => {
+test('quiet-warnings swallows only the SQLite experimental warning', async () => {
   assert.deepEqual(await warningsFor('SQLite is an experimental feature and might change at any time'), []);
   assert.deepEqual(await warningsFor('something else entirely'), ['something else entirely']);
   assert.deepEqual(await warningsFor(new Error('an Error-object warning')), ['an Error-object warning']);
 });
 
-test('sqlite-quiet swallows only the stripTypeScriptTypes experimental warning', async () => {
+test('quiet-warnings swallows only the stripTypeScriptTypes experimental warning', async () => {
   assert.deepEqual(await warningsFor('stripTypeScriptTypes is an experimental feature and might change at any time'), []);
   assert.deepEqual(await warningsFor('stripTypeScriptTypes is deprecated'), ['stripTypeScriptTypes is deprecated']);
 });
