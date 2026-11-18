@@ -42,10 +42,21 @@ export function credIdMap(mapping: CredMapping): Record<string, string> {
 // Resolve the stable localId for an n8n credential id: reuse the known one, else
 // mint a UUID exactly once. Mutates both `mapping` and `idx` so repeated calls in
 // a batch stay consistent.
+//
+// An existing entry is merged, never replaced: every stored field (notably
+// `updatedAt`, the change token plan uses to spot edits made in the n8n UI) and the
+// stored name are kept. `name` only fills a missing name or names a legacy
+// bare-string entry. Reason: the stored name comes from n8n's credential listing,
+// whereas a node's credential reference keeps the name it had when that node was
+// last saved, so it can be stale after a rename. Both callers rely on this: node
+// references must not overwrite, and the credential pull builds its own fresh
+// definition (the mapping it passes here only resolves localIds).
 export function resolveCredLocalId(mapping: CredMapping, idx: Map<string, string>, n8nId: string, name?: string): string {
   const existing = idx.get(n8nId);
   if (existing) {
-    mapping[existing] = { id: n8nId, name: name ?? (mapping[existing] as any)?.name };
+    const cur = mapping[existing];
+    const stored = typeof cur === 'object' && cur !== null ? cur : {};
+    mapping[existing] = { ...stored, id: n8nId, name: stored.name ?? name };
     return existing;
   }
   const localId = randomUUID();

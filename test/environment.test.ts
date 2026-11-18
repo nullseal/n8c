@@ -129,3 +129,16 @@ test('mapCredentialsFromWorkflows skips workflows without nodes and credential r
   const defs: any = await store.getDefinitions('default', 'credentials');
   assert.deepEqual(Object.values(defs), [{ id: 'S1', name: 'Slack' }]);
 });
+
+test('mapCredentialsFromWorkflows leaves a mapped credential untouched: updatedAt and the stored name survive a stale node reference', async () => {
+  const store = new MemoryStore();
+  await store.withTransaction((s) => store.putDefinitions('staging', 'credentials',
+    { l1: { id: 'c1', name: 'Real', updatedAt: 'T1' } }, s));
+  const wfs = [{ id: 'w1', name: 'Main', nodes: [
+    { id: 'n1', name: 'A', credentials: { mongoDb: { id: 'c1', name: 'Stale' } } },
+  ] }];
+  const ctx = { env: 'staging', encrypted: false, n8n: { listWorkflows: async () => wfs },
+    getDefinitions: (k: string) => store.getDefinitions('staging', k) } as any;
+  await mapCredentialsFromWorkflows(store, ctx);
+  assert.deepEqual(await store.getDefinitions('staging', 'credentials'), { l1: { id: 'c1', name: 'Real', updatedAt: 'T1' } });
+});

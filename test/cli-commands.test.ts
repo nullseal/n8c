@@ -493,6 +493,33 @@ test('a kind that became empty is one change, then pulls report nothing changed'
   assert.equal(await generationCount(), 2, 'no further generation');
 });
 
+test('pull keeps a credential\'s updatedAt, so plan sees a later edit in the n8n UI', async (t) => {
+  // A node reference carries the name the credential had when the node was last
+  // saved (stale here); the pull must not let it overwrite the stored entry.
+  const wf = WF('W1', 'Main');
+  (wf.nodes[0] as any).credentials = { httpHeaderAuth: { id: 'c1', name: 'Old name' } };
+  const fake = await withFake({ workflows: [wf], credentials: [{ id: 'c1', name: 'Hdr', type: 'httpHeaderAuth', updatedAt: '2026-01-01T00:00:00Z' }] });
+  capture(t);
+  await runCli(['init']);
+  await runCli(['pull', '-y']);
+  const store = await openStore();
+  try {
+    const defs: any = await store.getDefinitions('default', 'credentials');
+    assert.deepEqual(Object.values(defs), [{ id: 'c1', name: 'Hdr', updatedAt: '2026-01-01T00:00:00Z' }]);
+  } finally { await store.close(); }
+  const credState = async () => {
+    const files = readdirSync(join(cwd, '.states'));
+    const st = JSON.parse(readFileSync(join(cwd, '.states', files[files.length - 1]), 'utf8'));
+    return st;
+  };
+  await runCli(['plan']);
+  assert.equal((await credState()).summary.update, 0, 'untouched credential is a no-op');
+  fake.credentials[0] = { ...fake.credentials[0], updatedAt: '2026-02-02T00:00:00Z' }; // edited in the n8n UI
+  await runCli(['plan']);
+  const st = await credState();
+  assert.equal(st.summary.update, 1, 'the UI edit is detected');
+});
+
 test('pull --no-export fills the DB only', async (t) => {
   await withFake({ workflows: [WF('W1', 'Main')] });
   const cap = capture(t);

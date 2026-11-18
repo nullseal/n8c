@@ -40,6 +40,25 @@ test('resolveCredLocalId mints a single UUID for a new n8n id', () => {
   assert.equal(resolveCredLocalId(mapping, idx, 'NEW_N8N_ID', 'Fresh'), id);
 });
 
+test('resolveCredLocalId keeps every stored field and the stored name when a node reference is stale', () => {
+  const mapping: Record<string, any> = { l1: { id: 'c1', name: 'Real', updatedAt: 'T1' } };
+  const idx = credIndex(mapping);
+  assert.equal(resolveCredLocalId(mapping, idx, 'c1', 'Stale'), 'l1');
+  assert.deepEqual(mapping.l1, { id: 'c1', name: 'Real', updatedAt: 'T1' });
+});
+
+test('resolveCredLocalId fills a missing name from the reference and keeps other fields', () => {
+  const mapping: Record<string, any> = { l1: { id: 'c1', updatedAt: 'T1' } };
+  resolveCredLocalId(mapping, credIndex(mapping), 'c1', 'Ref');
+  assert.deepEqual(mapping.l1, { id: 'c1', name: 'Ref', updatedAt: 'T1' });
+});
+
+test('resolveCredLocalId upgrades a legacy bare-string entry to {id, name}', () => {
+  const mapping: Record<string, any> = { l1: 'c1' };
+  assert.equal(resolveCredLocalId(mapping, credIndex(mapping), 'c1', 'Ref'), 'l1');
+  assert.deepEqual(mapping.l1, { id: 'c1', name: 'Ref' });
+});
+
 test('normalizeMapping collapses the exact polluted mapping to one localId per n8n id', () => {
   const polluted = {
     'xaY3BcbugejKug7T': { id: 'xaY3BcbugejKug7T', name: 'Shopify Admin' },

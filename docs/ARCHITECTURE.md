@@ -306,14 +306,14 @@ flowchart TD
     AP["apply: ids returned by<br/>pushToServer, deleted<br/>rows removed"]
     DEFS[("credential definitions, per env<br/>localId to id, name, updatedAt<br/>normalized on write: one<br/>localId per n8n id")]
     PF -->|"putDefinitions<br/>(replaces)"| DEFS
-    MW -->|"putDefinitions<br/>(merged: each entry rewritten to<br/>id + node reference name<br/>(the stored name if the reference has none),<br/>stored updatedAt dropped)"| DEFS
+    MW -->|"putDefinitions<br/>(merged: an existing entry keeps its<br/>fields and name; a reference only adds an<br/>unmapped credential or fills a missing name)"| DEFS
     AP -->|"putDefinitions"| DEFS
 
     subgraph PLAN["plan: one credential file"]
         M{"mapped?"}
         L{"listCredentials<br/>succeeded?"}
         S{"mapped id<br/>still on n8n?"}
-        D{"name or type differs,<br/>n8n updatedAt differs<br/>from the mapped one<br/>(inert when the mapping has no<br/>updatedAt, e.g. after a pull),<br/>or the file differs from<br/>the live doc (or none)?"}
+        D{"name or type differs,<br/>n8n updatedAt differs<br/>from the mapped one<br/>(only checked when the mapping<br/>has an updatedAt, as after a pull),<br/>or the file differs from<br/>the live doc (or none)?"}
         F{"file differs from<br/>the live doc<br/>(or none)?"}
         CREATE["create"]
         UPDATE["update (PATCH)"]
@@ -349,9 +349,11 @@ flowchart TD
 - The pull writes the credential mapping with replace semantics from `listCredentials`, which only sees
   credentials the API key can reach; `mapCredentialsFromWorkflows` then merges every node reference back
   in, so a credential from another n8n project still resolves on export. The merge (`resolveCredLocalId`)
-  rewrites each existing entry to `{ id, name }` (the node reference's name, falling back to the stored name when the reference has none), discarding the `updatedAt` the
-  credential pull just stored, so the plan's "n8n updatedAt differs" check is inert after a pull for every
-  node-referenced credential until n8c next pushes it (known bug, being fixed separately).
+  never rewrites an existing entry: it keeps every stored field, `updatedAt` included, and the stored name
+  (n8n's listing is the fresher source; a node's reference keeps the name from when the node was last
+  saved). A reference only adds an unmapped credential, or supplies a name to an entry that has none
+  (a legacy bare-string entry becomes `{ id, name }`). So the plan's "n8n `updatedAt` differs" check stays
+  live after a pull and detects credentials edited in the n8n UI.
 - `apply` runs the credentials kind first and saves its mapping before workflows push, so
   `workflow.beforePush` can bind a credential created in the same apply.
 
@@ -748,7 +750,7 @@ flowchart TD
         CR["credentials: pullEntity<br/>credential.pullFromServer<br/>(listCredentials)<br/>putDefinitions + putLive"]
         W --> PR --> PC --> CR
     end
-    CR --> MAP["mapCredentialsFromWorkflows<br/>listWorkflows, node credential<br/>refs merged into the<br/>credential definitions<br/>(merge drops stored updatedAt)"]
+    CR --> MAP["mapCredentialsFromWorkflows<br/>listWorkflows, node credential<br/>refs merged into the<br/>credential definitions<br/>(existing entries keep updatedAt and name)"]
     MAP --> CHG{"Phase 2: isKindChanged for a kind?<br/>member exists and its checksum differs,<br/>or no member and the kind has docs<br/>(an always-empty kind is unchanged)"}
     CHG -->|"some kind"| GEN["commitPullGeneration<br/>(nextVersionId):<br/>createSnapshot + markActive<br/>for every non-empty kind"]
     CHG -->|"no kind"| SAME["nothing changed,<br/>no new generation"]
