@@ -1,3 +1,4 @@
+import '../store/sqlite-quiet.ts'; // must precede the first stripTypeScriptTypes call — silences its experimental warning
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { inlineUnit } from '../src/build/inline.ts';
 
 function unit(files: Record<string, string>): string {
@@ -127,5 +128,17 @@ test('a helper imported by two modules (diamond) is inlined exactly once', () =>
     const js = inlineUnit(dir);
     assert.equal(js.split('const SHARED = 7').length - 1, 1, 'shared helper appears once');
     assert.ok(js.includes('const A =') && js.includes('const B ='));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('inlining a unit prints no stripTypeScriptTypes experimental warning', () => {
+  const dir = unit({ 'code.ts': 'const n: number = 1;\nreturn [{ json: { n } }];\n' });
+  try {
+    // A warning fires once per process, so check a fresh one.
+    const script = `import { inlineUnit } from ${JSON.stringify(new URL('../src/build/inline.ts', import.meta.url).href)}; process.stdout.write(inlineUnit(process.argv[1]));`;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, dir], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes('return'), 'inlined output produced');
+    assert.ok(!/stripTypeScriptTypes|ExperimentalWarning/.test(r.stderr), r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

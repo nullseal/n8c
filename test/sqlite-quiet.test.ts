@@ -25,3 +25,8 @@ test('sqlite-quiet swallows only the SQLite experimental warning', async () => {
   assert.deepEqual(await warningsFor('something else entirely'), ['something else entirely']);
   assert.deepEqual(await warningsFor(new Error('an Error-object warning')), ['an Error-object warning']);
 });
+
+test('sqlite-quiet swallows only the stripTypeScriptTypes experimental warning', async () => {
+  assert.deepEqual(await warningsFor('stripTypeScriptTypes is an experimental feature and might change at any time'), []);
+  assert.deepEqual(await warningsFor('stripTypeScriptTypes is deprecated'), ['stripTypeScriptTypes is deprecated']);
+});
