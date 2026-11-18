@@ -152,7 +152,7 @@ stateDiagram-v2
             state "Delete" as Delete {
                 state "Resolve the n8n id<br/>workflows: mapping, else the plan's serverId<br/>credentials: the mapping's id<br/>prompts, promptContents: none" as Resolve
                 state target <<choice>>
-                state "archiveWorkflow<br/>round 1: soft, recoverable" as Archive
+                state "archiveWorkflow<br/>round 1: soft, recoverable<br/>(V2 on n8n before 2.15: permanent delete, diagram 15)" as Archive
                 state "deleteWorkflow<br/>round 2: permanent" as Purge
                 state "deleteCredential<br/>permanent" as DelCred
                 state "Forget it locally<br/>remove the mapping entry<br/>putLive(kind, live docs minus this one)" as Forget
@@ -162,9 +162,9 @@ stateDiagram-v2
                 target --> Purge : archived workflow
                 target --> DelCred : mapped credential
                 target --> Forget : no id
-                Archive --> Forget : done, or 404
-                Purge --> Forget : done, or 404
-                DelCred --> Forget : done, or 404
+                Archive --> Forget : done, or HTTP status 404
+                Purge --> Forget : done, or HTTP status 404
+                DelCred --> Forget : done, or HTTP status 404
                 Forget --> [*]
             }
             state "Create or update" as Upsert {
@@ -188,7 +188,7 @@ stateDiagram-v2
             action --> Failed : desired doc missing
             Delete --> Ok
             Upsert --> Ok
-            Delete --> Failed : a step throws, n8n 404 counts as done
+            Delete --> Failed : a step throws, HTTP status 404 counts as done
             Upsert --> Failed : a step throws
             Ok --> [*]
             Failed --> [*]
@@ -227,6 +227,9 @@ stateDiagram-v2
   (recoverable); n8n keeps listing it, so the next `plan --destroy` plans it again with
   `archived: true`, and round 2 deletes it permanently. A workflow made in the n8n UI has no mapping,
   so its id is the `serverId` the plan recorded.
+- "Already gone" means the error's HTTP status is 404 (`err.status`), never the message text, which also carries the
+  request path and response body. On n8n 2.0 to 2.14 `archiveWorkflow` has no endpoint to call, so the V2 client
+  deletes the workflow permanently in round 1 (diagram 15).
 - Credentials are deleted permanently in one round; prompts and prompt-contents only leave the DB.
 - The refresh and `writeState` steps belong to the CLI (`apply`, and `restore --apply`); `apply` exits 1
   when any row failed.
@@ -242,7 +245,7 @@ stateDiagram-v2
   be re-PUT and republished. The drift gate (diagram 9) still checks the stamped rows' entities, so a
   retry stops if one of them changed on n8n since.
 
-**Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
+**Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` (`archiveWorkflow` fallback) and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 
 ## 4. Credential secrets
 
@@ -826,6 +829,12 @@ flowchart TD
     V3 --> CW3["createWorkflow, overridden:<br/>POST /workflows with projectId<br/>in the body when n8nProjectId<br/>is set, no transfer call"]
     V3 --> AW3["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish<br/>(both overridden)"]
     V2 --> LW["listWorkflows, V3 inherits it:<br/>when a row has activeVersionId,<br/>active = activeVersionId is not null"]
+    V2 --> ARC["archiveWorkflow, V3 inherits it:<br/>POST archive"]
+    ARC -->|"ok, or any error<br/>other than 404"| ARCR(["resolves, or rethrows<br/>the same error"])
+    ARC -->|"404"| ARCG["GET /workflows/{id}"]
+    ARCG -->|"404"| ARCO(["rethrows the original archive<br/>404: apply reads it as already deleted"])
+    ARCG -->|"other error"| ARCE(["rethrows the GET error,<br/>so apply fails the row"])
+    ARCG -->|"200: no archive endpoint,<br/>n8n before 2.15"| ARCD(["deleteWorkflow: permanent DELETE,<br/>then one warning line"])
     V2 --> UW["updateWorkflow, V3 inherits it:<br/>PUT via base"]
     UW --> R{"response"}
     R -->|"ok"| DONE(["updated"])
@@ -838,9 +847,12 @@ flowchart TD
   which every 2.x release serves. `N8nClientV3` overrides `createWorkflow`, `activateWorkflow` and `deactivateWorkflow`
   for n8n 3.x; the endpoints it uses also exist from 2.33.
 - Other features need a later 2.x release than the workflow calls do: credential updates (`PATCH /credentials/{id}`)
-  from 2.4.0, credential listing (`GET /credentials`) from 2.8.0, `archiveWorkflow` (`POST /workflows/{id}/archive`)
-  from 2.15.0, and `projectId` honored on credential create from 2.18.0 (before that, n8n puts a new credential in
+  from 2.4.0, credential listing (`GET /credentials`) from 2.8.0, and `projectId` honored on credential create from 2.18.0 (before that, n8n puts a new credential in
   the API key's personal project).
+- `POST /workflows/{id}/archive` exists only from 2.15.0; before that the route is missing and answers 404 although
+  the workflow exists. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after a 404: if that also 404s the
+  workflow is gone and the original error is rethrown; if it succeeds, the workflow is deleted permanently (on those
+  releases `DELETE` is a forced delete) and a warning line is printed; any other GET error is rethrown.
 - n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.
 - A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
   `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and

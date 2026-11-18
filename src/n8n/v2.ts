@@ -3,8 +3,9 @@ import { N8nClientBase } from './base.ts';
 // For n8n 2.x. Its workflow calls use only endpoints every 2.x release serves:
 // POST /activate and /deactivate, and create-then-transfer for a project.
 // (/publish, /unpublish and projectId on create arrived during 2.x: see v3.ts.)
-// Credential updates, credential listing, archive and projectId on credential
-// create need later 2.x releases (2.4, 2.8, 2.15, 2.18): see the README.
+// Credential updates, credential listing and projectId on credential create need
+// later 2.x releases (2.4, 2.8, 2.18): see the README. Archive (2.15) has a
+// fallback below.
 // 2.x and 3.x share the draft/publish model, so V3 inherits updateWorkflow and
 // listWorkflows from here.
 export class N8nClientV2 extends N8nClientBase {
@@ -33,6 +34,29 @@ export class N8nClientV2 extends N8nClientBase {
         throw err;
       }
       throw e;
+    }
+  }
+
+  // POST /archive exists only from n8n 2.15; on 2.0-2.14 the route is missing, so it
+  // answers 404 although the workflow exists. Tell the two 404s apart with a GET.
+  async archiveWorkflow(id: string): Promise<any> {
+    try {
+      return await super.archiveWorkflow(id);
+    } catch (archiveError: any) {
+      if (archiveError?.status !== 404) throw archiveError;
+      // GET /workflows/{id} exists in every 2.x. It 404s too: the workflow is really
+      // gone (apply reads the original 404 as "already deleted"). Any other GET
+      // failure propagates as itself, never as the archive 404.
+      try {
+        await this.req('GET', `/api/v1/workflows/${id}`);
+      } catch (getError: any) {
+        throw getError?.status === 404 ? archiveError : getError;
+      }
+      // The workflow exists, so this n8n has no archive endpoint. DELETE there is a
+      // forced, permanent delete; there is nothing softer on those releases.
+      const result = await this.deleteWorkflow(id);
+      console.error(`  ⚠ workflow ${id} was permanently deleted because this n8n has no archive endpoint (n8n 2.15+ archives instead).`);
+      return result;
     }
   }
 

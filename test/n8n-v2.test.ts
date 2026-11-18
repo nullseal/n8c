@@ -156,3 +156,59 @@ test('createN8nClient picks the class by version', () => {
   assert.ok(!(two instanceof N8nClientV3));
   assert.ok(createN8nClient('3', 'https://n8n.test', 'K') instanceof N8nClientV3);
 });
+
+// ---- archiveWorkflow: n8n 2.0-2.14 has no archive route, so a 404 there is ambiguous.
+const status = (s: number) => (method: string, url: string): Reply =>
+  url.endsWith('/archive') ? { status: s, text: '{"message":"Not Found"}' } : { body: {} };
+
+for (const [name, Cls] of classes) {
+  test(`${name}: archiveWorkflow sends only the archive POST when it succeeds`, async () => {
+    const { client, calls } = make(Cls);
+    await client.archiveWorkflow('W1');
+    assert.deepEqual(calls, [['POST', `${B}/W1/archive`, undefined]]);
+  });
+
+  test(`${name}: archive 404 + GET 200 (no archive endpoint) permanently deletes and warns`, async (t) => {
+    const errs: string[] = [];
+    t.mock.method(console, 'error', (...a: unknown[]) => { errs.push(a.join(' ')); });
+    const { client, calls } = make(Cls, (m, u) => (u.endsWith('/archive') ? { status: 404, text: '{"message":"Not Found"}' } : { body: { id: 'W1' } }));
+    await client.archiveWorkflow('W1');
+    assert.deepEqual(calls.map((c) => [c[0], c[1]]), [['POST', `${B}/W1/archive`], ['GET', `${B}/W1`], ['DELETE', `${B}/W1`]]);
+    assert.deepEqual(errs, ['  ⚠ workflow W1 was permanently deleted because this n8n has no archive endpoint (n8n 2.15+ archives instead).']);
+  });
+
+  test(`${name}: archive 404 + GET 404 rethrows the original archive error`, async () => {
+    const { client, calls } = make(Cls, () => ({ status: 404, text: '{"message":"Not Found"}' }));
+    const e = await rejection(client.archiveWorkflow('W1'));
+    assert.equal(e.status, 404);
+    assert.match(e.message, /POST \/api\/v1\/workflows\/W1\/archive -> 404/);
+    assert.deepEqual(calls.map((c) => c[0]), ['POST', 'GET']);
+  });
+
+  test(`${name}: archive 404 + GET 404 rejects with the very error the archive threw`, async () => {
+    const original = Object.assign(new Error('archive 404'), { status: 404 });
+    class Fake extends Cls { protected async req(m: string): Promise<any> { throw m === 'POST' ? original : Object.assign(new Error('gone'), { status: 404 }); } }
+    assert.equal(await rejection(new Fake('https://n8n.test', 'KEY').archiveWorkflow('W1')), original);
+  });
+
+  test(`${name}: archive 500 is rethrown unchanged with no GET`, async () => {
+    const { client, calls } = make(Cls, status(500));
+    const e = await rejection(client.archiveWorkflow('W1'));
+    assert.equal(e.status, 500);
+    assert.deepEqual(calls.map((c) => c[0]), ['POST']);
+  });
+
+  test(`${name}: archive 404 + GET 500 rejects with the GET's error, never the archive 404`, async () => {
+    const { client } = make(Cls, (m, u) => (u.endsWith('/archive') ? { status: 404, text: 'nf' } : { status: 500, text: 'boom' }));
+    const e = await rejection(client.archiveWorkflow('W1'));
+    assert.equal(e.status, 500);
+    assert.match(e.message, /GET \/api\/v1\/workflows\/W1 -> 500/);
+  });
+}
+
+test('V3 inherits the archive fallback from V2', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { client, calls } = make(N8nClientV3, (m, u) => (u.endsWith('/archive') ? { status: 404 } : { body: {} }));
+  await client.archiveWorkflow('W1');
+  assert.equal(calls.at(-1)![0], 'DELETE');
+});

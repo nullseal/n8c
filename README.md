@@ -199,7 +199,8 @@ Code-node units under `src/<unit>` are inlined into their target nodes *before* 
 - **Credentials reconcile in place** via `PATCH`, using the server's `updatedAt` as a change token —
   no duplicates; missing-on-server is recreated.
 - **`plan --destroy`** plans deletes for everything that has no file, not just workflows. `apply`
-  **archives** a live workflow (soft, recoverable) but hard-deletes one that's already archived (see
+  **archives** a live workflow (soft, recoverable; on n8n 2.0 to 2.14, which have no archive endpoint, it is
+  deleted permanently instead) but hard-deletes one that's already archived (see
   [Archived workflows](#archived-workflows)), **permanently deletes credentials** from n8n, and
   removes prompts / prompt-contents from the DB's live docs (their history stays).
 
@@ -411,11 +412,12 @@ commands, so the call does).
 before 2.33 does not have.
 
 `"2"` works with n8n 2.x. Workflows themselves (create, update, list, activate, transfer) work on every 2.x
-release; some other features need a later one:
+release, and so does `--destroy`: n8n 2.15 and later archive the workflow (recoverable in n8n), while 2.0 to 2.14
+have no archive endpoint, so `apply` permanently deletes it there and prints a warning. Some other features need
+a later release:
 
 - credential updates (`PATCH /credentials/{id}`): n8n 2.4.0 or later;
 - credential listing (`GET /credentials`, used by `pull`, `plan` and apply's drift check): n8n 2.8.0 or later;
-- archiving a workflow (`POST /workflows/{id}/archive`, used by `plan --destroy` and `apply`): n8n 2.15.0 or later;
 - creating a credential directly in `n8nProjectId`: n8n 2.18.0 or later (before that, new credentials land in
   the API key's personal project).
 
