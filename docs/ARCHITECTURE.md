@@ -227,9 +227,9 @@ stateDiagram-v2
   (recoverable); n8n keeps listing it, so the next `plan --destroy` plans it again with
   `archived: true`, and round 2 deletes it permanently. A workflow made in the n8n UI has no mapping,
   so its id is the `serverId` the plan recorded.
-- "Already gone" means the error's HTTP status is 404 (`err.status`), never the message text, which also carries the
-  request path and response body. On n8n 2.0 to 2.14 `archiveWorkflow` has no endpoint to call, so the V2 client
-  deletes the workflow permanently in round 1 (diagram 15).
+- "Already gone" means the error's HTTP status is 404 (`err.status`), never the message text, which also
+  carries the request path and response body. On n8n 2.0 to 2.14 `archiveWorkflow` has no endpoint to call,
+  so the V2 client deletes the workflow permanently in round 1 (diagram 15).
 - Credentials are deleted permanently in one round; prompts and prompt-contents only leave the DB.
 - The refresh and `writeState` steps belong to the CLI (`apply`, and `restore --apply`); `apply` exits 1
   when any row failed.
@@ -248,7 +248,7 @@ stateDiagram-v2
   a new workflow, say): the failed row does not commit its live doc or stamp `appliedAt` and does not count toward
   the release, but its created id is kept, so the retry updates that workflow instead of creating a second one.
 
-**Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` (`archiveWorkflow` fallback) and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
+**Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` (`archiveWorkflow` fallback, and `activateWorkflow` / `deactivateWorkflow` as /activate and /deactivate) and `src/n8n/v3.ts` (the same two verbs as /publish and /unpublish), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 
 ## 4. Credential secrets
 
@@ -506,9 +506,10 @@ flowchart TD
 
 Every apply that changes something, and every pull that finds a difference, writes one generation: all
 kinds snapshotted under one `versionId`. `list`, `restore` and `drop` address generations, never a
-single kind. A kind that is empty is never snapshotted, so a pull compares each kind with its member
-in the newest generation that has one: an always-empty kind (no member, no docs) is unchanged, while a
-kind that became empty (member, no docs now) is changed and costs exactly one generation.
+single kind. A kind that is empty is never snapshotted, so a pull compares each kind with its member in
+`activeGen`, the newest generation that has any active member; there is no per-kind lookup into older
+generations. An always-empty kind (no member, no docs) is unchanged, while a kind that became empty (member,
+no docs now) is changed and costs exactly one generation.
 
 ```mermaid
 flowchart TD
