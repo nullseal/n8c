@@ -198,8 +198,8 @@ stateDiagram-v2
         [*] --> Load
         Load --> Rows
         Rows --> saved
-        saved --> SaveDefs : a row succeeded
-        saved --> [*] : no row succeeded
+        saved --> SaveDefs : a row succeeded, or n8n assigned an id to a row that then failed
+        saved --> [*] : no row succeeded and no id assigned
         SaveDefs --> [*]
     }
     state clientCheck <<choice>>
@@ -244,6 +244,9 @@ stateDiagram-v2
   credential: a `create` POSTs again even when the first attempt's mapping exists, and a workflow would
   be re-PUT and republished. The drift gate (diagram 9) still checks the stamped rows' entities, so a
   retry stops if one of them changed on n8n since.
+- The mapping is stored whenever `pushToServer` returned ids, even if the row then fails (n8n refusing to activate
+  a new workflow, say): the failed row does not commit its live doc or stamp `appliedAt` and does not count toward
+  the release, but its created id is kept, so the retry updates that workflow instead of creating a second one.
 
 **Source:** `src/engine/apply-state.ts` (`applyFromState`, `pendingRows`, the no-client guard), `src/engine/state.ts` (`activeKinds`, `desiredByKind`, `Resource.appliedAt`), `src/entities/workflow.ts` and `src/entities/credential.ts` (`pushToServer`), `src/n8n/base.ts` (`archiveWorkflow`, `deleteWorkflow`, `deleteCredential`), `src/n8n/v2.ts` (`archiveWorkflow` fallback) and `src/n8n/v3.ts` (`activateWorkflow`, `deactivateWorkflow`), `src/engine/verify.ts` (`refreshedServerFacts`), `src/cli.ts` (apply and restore handlers).
 

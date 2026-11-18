@@ -53,6 +53,13 @@ async function startFake() {
         if (i < 0) return send(404, { message: 'workflow not found' });
         return send(200, workflows.splice(i, 1)[0]);
       }
+      const toggle = /^\/api\/v1\/workflows\/([^/]+)\/(activate|publish|deactivate|unpublish)$/.exec(url);
+      if (method === 'POST' && toggle) {
+        const w = workflows.find((x) => x.id === toggle[1]);
+        if (!w) return send(404, { message: 'workflow not found' });
+        w.active = toggle[2] === 'activate' || toggle[2] === 'publish';
+        return send(200, w);
+      }
       if (method === 'PUT' && url.startsWith('/api/v1/workflows/')) {
         const w = workflows.find((x) => x.id === url.split('/').pop());
         if (!w) return send(404, { message: 'workflow not found' });
@@ -202,6 +209,32 @@ test('a failed move into n8nProjectId (n8n 2.x) fails the row, leaves no workflo
   assert.deepEqual(retry.applied!.failed, []);
   assert.equal(fake.workflows.length, 1, 'exactly one workflow, no orphan from attempt 1');
   assert.equal(fake.credentials.length, 1);
+});
+
+test('a workflow created but not activated keeps its id: the row fails, the mapping is stored, and a retry of the saved plan updates instead of creating', async (t) => {
+  const { root, fake, store, ctx } = await setup(t);
+  const plan = await computePlan(store, root, ctx, { version: '0' });
+  plan.resources.find((r) => r.kind === 'workflows')!.setActive = true;
+
+  // attempt 1: the workflow is created, then n8n refuses to activate it
+  fake.failing.add('POST /api/v1/workflows/W1/publish');
+  const first = await applyFromState(store, root, ctx, plan);
+  assert.deepEqual(first.applied!.ok, ['c1']);
+  assert.deepEqual(first.applied!.failed.map((f) => f.localId), ['w1']);
+  assert.equal(fake.workflows.length, 1);
+  assert.deepEqual(await store.getDefinitions('default', 'workflows'), { w1: 'W1' }, 'the created id is stored although the row failed');
+  assert.deepEqual(await store.getLive('workflows'), [], 'the live doc is not committed');
+  assert.equal(first.resources.find((r) => r.kind === 'workflows')!.appliedAt, undefined);
+
+  // attempt 2: the same saved plan, after n8n accepts the activation
+  fake.failing.clear();
+  const retry = await applyFromState(store, root, ctx, roundTrip(first));
+  assert.deepEqual(retry.applied!.ok, ['w1']);
+  assert.deepEqual(retry.applied!.failed, []);
+  assert.equal(fake.count('POST', '/api/v1/workflows'), 1, 'no second workflow is created');
+  assert.equal(fake.count('PUT', '/api/v1/workflows/W1'), 1, 'the retry updates the created one');
+  assert.equal(fake.workflows.length, 1);
+  assert.equal(fake.workflows[0].active, true);
 });
 
 test('re-applying a plan that already applied in full writes nothing to n8n and records no new release', async (t) => {

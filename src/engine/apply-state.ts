@@ -56,6 +56,7 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
     const desired = await desiredByKind(root, ctx, kind, codeByNode);
     let mapping: Record<string, unknown> = { ...(await ctx.getDefinitions(kind)) };
     let changed = false;
+    let mappingDirty = false; // ids assigned by n8n that must be stored even if no row of this kind completed
 
     for (const r of rows) {
       try {
@@ -103,6 +104,9 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
         if (desc.hasServer && desc.pushToServer) {
           const m = await desc.pushToServer(ctx, [d] as any, { [d.localId]: r.action === 'create' ? 'new' : 'changed' });
           mapping = { ...mapping, ...m };
+          // The ids n8n just assigned must survive a later failure of this row (activation
+          // below, the live-doc commit): otherwise a retry would create a second copy.
+          if (Object.keys(m).length) mappingDirty = true;
         }
         // 1b) reconcile the active flag (workflows) — the workflow body can't set
         // `active` (read-only), so activate/deactivate explicitly when it drifts.
@@ -118,10 +122,8 @@ export async function applyFromState(store: Store, root: string, ctx: EntityCont
       }
     }
 
-    if (changed) {
-      await store.withTransaction((s) => store.putDefinitions(ctx.env, kind, mapping, s));
-      anyChange = true;
-    }
+    if (changed || mappingDirty) await store.withTransaction((s) => store.putDefinitions(ctx.env, kind, mapping, s));
+    if (changed) anyChange = true;
   }
 
   // Pass 2: bump ALL kinds to the shared generation (one coherent release). Skipped
