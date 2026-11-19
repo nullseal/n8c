@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { validateAll } from '../src/engine/validate.ts';
+import { writeEntity } from '../src/layout.ts';
 
 function ctx(store: MemoryStore) {
   return { env: 'test', encrypted: false, getDefinitions: (k: string) => store.getDefinitions('test', k) } as any;
@@ -121,6 +122,19 @@ test('validateAll accepts valid connections', async () => {
     explodedWithConnections(root, { na: { main: [[{ node: 'nb', type: 'main', index: 0 }]] } });
     const store = new MemoryStore();
     assert.deepEqual(await validateAll(root, ctx(store), store), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Prompt keys must be unique across prompts/ folders and node prompt.ts files.
+test('validateAll flags a node prompt.ts whose key a prompts/ folder already uses', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    writeEntity(root, 'prompts', 'p1', { name: 'greet' }, { key: 'greet', content: 'hi' });
+    explodedWithConnections(root, {});
+    writeFileSync(join(root, 'workflows', 'w1', 'nodes', 'na', 'prompt.ts'), 'export default { key: "greet", content: "hello" };\n');
+    writeFileSync(join(root, 'workflows', 'w1', 'nodes', 'nb', 'prompt.ts'), 'export default { key: "bye", content: "ciao" };\n');
+    const store = new MemoryStore();
+    assert.deepEqual(await validateAll(root, ctx(store), store), ['duplicate prompt key greet']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

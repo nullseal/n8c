@@ -63,3 +63,41 @@ test('code.ts module form: export default still yields its value', async () => {
 test('code.ts module form: a template line starting with export does not hide the real export', async () => {
   assert.equal(await jsCodeOf('export default () => `a\nexport b\nreturn 1`;\n'), 'a\nexport b\nreturn 1');
 });
+
+// An exploded workflow with nodes na ('Start'), nb ('Middle') and nc ('End');
+// metadata.json connects Start → Middle.
+function threeNodes(root: string): string {
+  const wf = join(root, 'workflows', 'w1');
+  mkdirSync(wf, { recursive: true });
+  writeFileSync(join(wf, 'metadata.json'), JSON.stringify({
+    name: 'flow', connections: { na: { main: [[{ node: 'nb', type: 'main', index: 0 }]] } },
+  }));
+  writeFileSync(join(wf, 'apply.ts'), 'export default {};\n');
+  for (const [id, name] of [['na', 'Start'], ['nb', 'Middle'], ['nc', 'End']]) {
+    mkdirSync(join(wf, 'nodes', id), { recursive: true });
+    writeFileSync(join(wf, 'nodes', id, 'metadata.json'), JSON.stringify({ name, type: 'n8n-nodes-base.noOp', typeVersion: 1, position: [0, 0] }));
+    writeFileSync(join(wf, 'nodes', id, 'apply.ts'), 'export default {};\n');
+  }
+  return wf;
+}
+
+test("a node's connection.ts replaces its metadata.json connections", async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    const wf = threeNodes(root);
+    writeFileSync(join(wf, 'nodes', 'na', 'connection.ts'), "export default { main: [[{ node: 'nc', type: 'main', index: 0 }]] };\n");
+    const { body } = await readEntity(root, 'workflows', 'w1') as any;
+    assert.deepEqual(body.connections, { Start: { main: [[{ node: 'End', type: 'main', index: 0 }]] } });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a node without credentials.ts keeps the credentials in its metadata.json', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    const wf = threeNodes(root);
+    const credentials = { openAiApi: { id: 'cred-1', name: 'OpenAI' } };
+    writeFileSync(join(wf, 'nodes', 'na', 'metadata.json'), JSON.stringify({ name: 'Start', type: 'n8n-nodes-base.noOp', typeVersion: 1, position: [0, 0], credentials }));
+    const { body } = await readEntity(root, 'workflows', 'w1') as any;
+    assert.deepEqual(body.nodes.find((n: any) => n.id === 'na').credentials, credentials);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
