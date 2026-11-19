@@ -638,9 +638,11 @@ Why branches is 98, not 100:
 - Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by up to
   about 0.3 percentage points between identical runs, and single files' branches flip too. A 100 gate
   would fail at random.
-- On rare runs the line total can also dip a fraction of a percent below 100 even though every test passes
-  (Node's merge of the per-process coverage reports occasionally loses part of one report). Re-run
-  `npm run test:cov`, and treat it as real only if it repeats.
+- On some runs the line total also dips a fraction of a percent below 100 even though every test passes
+  (Node's merge of the per-process coverage reports sometimes loses part of one report; at the time of
+  writing this hit about 2 runs in 5, always on lines that other runs cover). Re-run `npm run test:cov`,
+  and treat a dip as real only if it repeats. `npm publish` runs the same gate (`prepublishOnly`), so it
+  can fail this way too; re-run it.
 
 To find what is uncovered, emit an lcov report and look for zero hits:
 

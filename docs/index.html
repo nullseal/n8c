@@ -261,7 +261,7 @@
       <table class="cmds">
         <tr><td class="c">Node.js ≥ 22.18</td><td class="d">Or ≥ 23.6. n8c reads your project's <code>.ts</code> entity files at runtime using Node's built-in type stripping, on by default from these versions. On 22.6–22.17 use the <code>--experimental-strip-types</code> flag.</td></tr>
         <tr><td class="c">A database</td><td class="d"><b>SQLite by default</b> — a single local file, zero setup via built-in <code>node:sqlite</code>, nothing to install or run. Switch to <b>MongoDB</b> for teams / shared instances. See <a href="#backends">Storage backends</a>.</td></tr>
-        <tr><td class="c">n8n</td><td class="d"><b>n8n 2.x or 3.x</b> with the <b>Public API</b> enabled (v1) and an API key.</td></tr>
+        <tr><td class="c">n8n</td><td class="d"><b>n8n 2.x or 3.x</b> with the <b>Public API</b> enabled (v1) and an API key. n8c talks to n8n 3.x by default; for an n8n 2.x server set <code>"n8nVersion": "2"</code> in <code>n8c.config.json</code>.</td></tr>
       </table>
       </div>
     </div>
