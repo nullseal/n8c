@@ -625,32 +625,34 @@ against live instances.
 
 ```bash
 npm test             # run the suite
-npm run test:cov     # same, with coverage — FAILS below lines 100 / functions 100 / branches 98
+npm run test:cov     # same, under c8 — FAILS below lines / statements / functions 100, branches 96
 ```
 
 `prepublishOnly` runs `npm run test:cov` before the build, so a release can't ship under the gate.
 **Rule: every change keeps `npm run test:cov` green — new code ships with tests.**
 
-Why branches is 98, not 100:
+Coverage is measured by [c8](https://github.com/bcoe/c8), configured under `"c8"` in `package.json`.
+Node's built-in `--experimental-test-coverage` merged the per-test-file reports in an order-dependent
+way, so its totals changed between identical runs and the gate failed at random. c8 merges them
+exactly, so the numbers move only if the tests themselves take different paths. A branch that runs
+only on some runs because of timing would do that; pin it with a test that fixes the timing, as
+`test/version.test.ts` does for two version ids minted in the same millisecond.
 
-- The few uncovered branches are defensive fallbacks no caller can reach (e.g. `?.` / `??` on values
-  every caller provides).
-- Node merges per-test-file coverage in an order-dependent way, so the branch total jitters by up to
-  about 0.3 percentage points between identical runs, and single files' branches flip too. A 100 gate
-  would fail at random.
-- On some runs the line total also dips a fraction of a percent below 100 even though every test passes
-  (Node's merge of the per-process coverage reports sometimes loses part of one report; at the time of
-  writing this hit about 2 runs in 5, always on lines that other runs cover). Re-run `npm run test:cov`,
-  and treat a dip as real only if it repeats. `npm publish` runs the same gate (`prepublishOnly`), so it
-  can fail this way too; re-run it.
+Why branches is 96, not 100:
 
-To find what is uncovered, emit an lcov report and look for zero hits:
+- Every `??`, `?.` and ternary counts as a branch, alongside every `if`, and about 3% of them are
+  never taken. Most of those are fallbacks for values every caller provides (e.g. the `?? e` in
+  `e?.message ?? e`, used only if something throws a non-`Error`); the others are `if` or ternary arms
+  no test takes yet.
+- Node's built-in coverage reads about 2 points higher on the same code only because its merge drops
+  branches, uncovered ones among them.
+
+c8's table lists only the files below 100%. For each it shows the uncovered lines, or, when every
+line is covered, the lines holding an uncovered branch. For a per-branch view, build an HTML report
+from the last run:
 
 ```bash
-node --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' \
-  --test-reporter=lcov --test-reporter-destination=lcov.info
-grep -B8 'FNDA:0,' lcov.info    # uncovered functions (FN lines carry the names)
-grep -E '^(SF|BRDA:[0-9]+,[0-9]+,[0-9]+,(0|-))' lcov.info   # uncovered branches per file
+npx c8 report --reporter=html    # then open coverage/index.html
 ```
 
 ## License
