@@ -31,11 +31,15 @@ async function runApply(file: string): Promise<unknown> {
   return typeof def === 'function' ? await def({}) : def;
 }
 
-// Import a companion file's default export, or undefined if the file is absent.
+// Import a companion file's default export, or undefined if the file is absent or
+// holds only comments, like the stubs `n8c create node` writes. Without a
+// package.json saying "type": "module", Node loads a file with no `export` as
+// CommonJS, and its default export would read as `{}`: an empty connections or
+// credentials object, or a prompt with no key.
 // Like apply.ts, the export may be a static value, a function, or an async
 // function — a function is called with a context and awaited.
 async function optionalImport(file: string): Promise<unknown> {
-  if (!existsSync(file)) return undefined;
+  if (!existsSync(file) || !hasRealCode(readFileSync(file, 'utf8'))) return undefined;
   const mod = await import(pathToFileUrl(file));
   const def = mod.default;
   return typeof def === 'function' ? await def({}) : def;

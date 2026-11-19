@@ -4,8 +4,8 @@ import { join } from 'node:path';
 
 const APPLY_TEMPLATE = `export default {\n  // TODO: return the entity JSON\n};\n`;
 
-// Reserved node companion stubs — commented so they're inert until filled in
-// (an absent default export → the builder skips that companion).
+// Reserved node companion stubs — comments only, so they're inert until filled in
+// (src/layout.ts treats a companion file that holds only comments as absent).
 const NODE_CODE_STUB = [
   '// Code-node body → parameters.jsCode. Two forms (uncomment one):',
   '//',
@@ -16,8 +16,8 @@ const NODE_CODE_STUB = [
   '// return items.map(i => ({ json: { ...i.json } }));',
   '',
 ].join('\n');
-const NODE_CONNECTION_STUB = `// Outgoing connections of this node (node = TARGET nodeId). Or use \`n8c node set-connection\`.\n// export default { main: [[{ node: '<targetNodeId>', type: 'main', index: 0 }]] };\n`;
-const NODE_OTHER_HINT = `\n// Other reserved companions (add a file when needed):\n//   prompt.ts       → export default { key: 'my_prompt', content: '...' }  (extracted to n8c_prompts)\n//   credentials.ts  → export default { httpHeaderAuth: '<credentialLocalId>' }  (remapped at push)\n`;
+const NODE_CONNECTION_STUB = `// Outgoing connections of this node (node = TARGET nodeId).\n// export default { main: [[{ node: '<targetNodeId>', type: 'main', index: 0 }]] };\n`;
+const NODE_OTHER_HINT = `\n// Other reserved companions (add a file when needed):\n//   prompt.ts       → export default { key: 'my_prompt', content: '...' }  (plan checks its key is unique; n8c does not store it)\n//   credentials.ts  → export default { httpHeaderAuth: '<credentialLocalId>' }  (remapped at push)\n`;
 
 // Env var name derived from a credential name: uppercase, non-alnum -> _.
 function envVarName(name: string): string {

@@ -475,7 +475,7 @@ exploded one (a `nodes/` folder) the body is assembled from `metadata.json` and 
 ```mermaid
 flowchart TD
     W1["pull, restore: exportDocs writes flat:<br/>metadata.json with the name +<br/>apply.ts from materializeWorkflowSource"]
-    W2["n8c create workflow: flat scaffold<br/>n8c create node: adds nodes/{uuid}/<br/>with metadata.json, apply.ts,<br/>code.ts, connection.ts"]
+    W2["n8c create workflow: flat scaffold<br/>n8c create node: adds nodes/{uuid}/<br/>with metadata.json, apply.ts and<br/>comment-only code.ts, connection.ts"]
     W1 --> RE
     W2 --> RE
     RE["readEntity(root, kind, localId,<br/>codeByNode): reads metadata.json"] --> Q{"workflows kind and<br/>a nodes/ folder?"}
@@ -484,7 +484,7 @@ flowchart TD
     FDESC -->|"yes"| FCOPY["copy it into the body"]
     FDESC -->|"no"| FBODY["body = what apply.ts returns<br/>metadata.json supplies<br/>the display name"]
     FCOPY --> FBODY
-    Q -->|"yes: exploded"| EACH["each nodes/{nodeId}/ folder<br/>metadata.json: name, type,<br/>typeVersion, position, credentials<br/>apply.ts: parameters<br/>code.ts: jsCode (diagram 11)<br/>credentials.ts: TYPE to localId<br/>prompt.ts: for validateAll (diagram 12)<br/>connection.ts: outgoing connections"]
+    Q -->|"yes: exploded"| EACH["each nodes/{nodeId}/ folder<br/>metadata.json: name, type,<br/>typeVersion, position, credentials<br/>apply.ts: parameters<br/>code.ts: jsCode (diagram 11)<br/>credentials.ts: TYPE to localId<br/>prompt.ts: for validateAll (diagram 12)<br/>connection.ts: outgoing connections<br/>a file of only comments<br/>counts as absent"]
     EACH --> NODEOBJ["node: id = nodeId,<br/>notes = n8c@nodeId"]
     EACH --> CONN["connections: metadata.json ones<br/>keyed by nodeId, connection.ts<br/>wins for its node, target<br/>nodeIds resolved to names"]
     CONN --> CCHK{"validateAll: each<br/>metadata.json connection<br/>end a known node id?"}
@@ -499,8 +499,12 @@ flowchart TD
 ```
 
 - In the exploded layout, a `credentials.ts` replaces the node's `metadata.json` credentials.
+- A `connection.ts`, `credentials.ts` or `prompt.ts` that holds only comments counts as absent, so the
+  stubs `n8c create node` writes change nothing until filled in. Outside a `"type": "module"` package,
+  Node would load such a file as CommonJS and its default export would read as `{}`, wiping the
+  node's `metadata.json` connections or credentials.
 
-**Source:** `src/layout.ts` (`readEntity`, `writeEntity`, `MANAGED_MARKER`), `src/engine/validate.ts` (`validateAll` rules 0 and 3), `src/engine/transfer.ts` (`exportDocs`), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/generate.ts` (`createEntity`).
+**Source:** `src/layout.ts` (`readEntity`, `optionalImport`, `writeEntity`, `MANAGED_MARKER`), `src/engine/validate.ts` (`validateAll` rules 0 and 3), `src/engine/transfer.ts` (`exportDocs`), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/generate.ts` (`createEntity`).
 
 ## 8. Versions and generations
 
