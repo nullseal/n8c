@@ -361,7 +361,7 @@ Credential `apply.ts` reads secret values from the environment:
 
 ```ts
 export default function () {
-  return { name: 'My API', type: 'httpHeaderAuth', data: { token: process.env.MY_TOKEN } };
+  return { name: 'My API', type: 'httpHeaderAuth', data: { name: 'Authorization', value: process.env.MY_TOKEN } };
 }
 ```
 

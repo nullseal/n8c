@@ -10,21 +10,11 @@ import { decryptCredentialData } from '../entities/credential.ts';
 import { buildDocs } from './apply.ts';
 import { credIndex } from './cred-map.ts';
 import { scanWorkflowSecrets } from './secret-scan.ts';
+import { CREDENTIAL_DATA_EXAMPLE } from './credential-examples.ts';
 
 // Render a credential apply.ts: name/type + a commented hint for the secret.
 // The real `data` value (resolved from process.env at read time) is NEVER written
 // back to a file — that would leak the secret into a committed source file.
-// Example `data` shapes for common n8n credential types. The keys are defined by
-// the TYPE, not by n8c — n8n never returns credential data, so it can't be pulled
-// and we can only suggest. A wrong key is rejected by n8n with a 400.
-const CREDENTIAL_DATA_EXAMPLE: Record<string, string> = {
-  httpHeaderAuth: "{ name: 'Authorization', value: process.env.MY_TOKEN }",
-  httpQueryAuth: "{ name: 'api_key', value: process.env.MY_TOKEN }",
-  httpBasicAuth: '{ user: process.env.MY_USER, password: process.env.MY_PASSWORD }',
-  openAiApi: '{ apiKey: process.env.OPENAI_API_KEY }',
-  mongoDb: '{ connectionString: process.env.MONGO_URI }',
-};
-
 function credentialSource(body: any): string {
   const example = CREDENTIAL_DATA_EXAMPLE[body.type] ?? '{ apiKey: process.env.MY_TOKEN }';
   const hint = [

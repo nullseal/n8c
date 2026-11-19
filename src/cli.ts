@@ -107,7 +107,7 @@ function printApplied(state: { resources: any[]; applied: { ok: string[]; failed
   }
   for (const f of a.failed) {
     const r = byId.get(f.localId);
-    console.error(`  ${styleStatus('removed')} ✗ ${KIND_TO_SINGULAR[r?.kind] ?? ''} ${r?.name ?? f.localId} — ${f.error}`);
+    console.error(`  ${styleStatus('failed')} ✗ ${KIND_TO_SINGULAR[r?.kind] ?? ''} ${r?.name ?? f.localId} — ${f.error}`);
   }
   console.log(`Apply complete: ${a.ok.length} applied, ${a.failed.length} failed.`);
 }

@@ -306,7 +306,8 @@ test('apply --force plans and applies in one step; failures set exitCode 1', asy
   const cap = capture(t);
   await runCli(['apply', '--force']);
   assert.ok(fake.calls.some((c) => c.method === 'PUT' && c.url === '/api/v1/workflows/W1'));
-  assert.match(cap.errText(), /✗ workflow Will Fail — .*500/);
+  assert.match(cap.errText(), /failed ✗ workflow Will Fail — .*500/);
+  assert.doesNotMatch(cap.errText(), /removed/, 'a failed row is not labelled as removed');
   assert.match(cap.text(), /Apply complete: 0 applied, 1 failed\./);
   assert.equal(process.exitCode, 1);
 });

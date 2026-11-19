@@ -259,7 +259,7 @@ is imported. No secret is ever written to a file. The DB stores the resolved sec
 ```mermaid
 flowchart TD
     ENVF[".env or .env.{env}"] -->|"loadEnv"| CTX["buildContext: each key is<br/>copied into process.env unless<br/>the shell already set it"]
-    FILE["n8c/credentials/{localId}/apply.ts<br/>data: token = process.env.MY_TOKEN"] -->|"readEntity imports<br/>the module"| BODY["body.data holds<br/>the resolved secret"]
+    FILE["n8c/credentials/{localId}/apply.ts<br/>data fields read process.env.MY_TOKEN"] -->|"readEntity imports<br/>the module"| BODY["body.data holds<br/>the resolved secret"]
     CTX --> BODY
     BODY --> VAL{"validateAll"}
     VAL -->|"a data value<br/>is undefined"| E1["plan refused: is the<br/>referenced environment<br/>variable set?"]
@@ -786,7 +786,7 @@ flowchart TD
 - A kind whose pulled set is empty is not exported, so its old folders are not pruned.
 - Prompt-contents is skipped on sqlite (diagram 12).
 
-**Source:** `src/cli.ts` (pull handler, `dirHasEntities`, `writeTypesFile`, `printSecretWarnings`), `src/engine/pull.ts` (`pullEntity`, `isKindChanged`, `commitPullGeneration`), `src/engine/pull-prompts.ts`, `src/engine/environment.ts` (`mapCredentialsFromWorkflows`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/secret-scan.ts` (`scanWorkflowSecrets`), `src/layout.ts` (`writeEntity`), `src/engine/types-gen.ts`.
+**Source:** `src/cli.ts` (pull handler, `dirHasEntities`, `writeTypesFile`, `printSecretWarnings`), `src/engine/pull.ts` (`pullEntity`, `isKindChanged`, `commitPullGeneration`), `src/engine/pull-prompts.ts`, `src/engine/environment.ts` (`mapCredentialsFromWorkflows`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/engine/credential-examples.ts` (`CREDENTIAL_DATA_EXAMPLE`, the data hint), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/secret-scan.ts` (`scanWorkflowSecrets`), `src/layout.ts` (`writeEntity`), `src/engine/types-gen.ts`.
 
 ## 14. CLI commands and context
 
@@ -821,7 +821,7 @@ flowchart TB
     NC -->|"each request"| DBG["debugRequest + debugResponse<br/>printed only with --debug,<br/>request bodies redacted,<br/>only error response bodies printed raw,<br/>success: status only"]
 ```
 
-**Source:** `src/cli.ts` (`buildProgram`, `isEntryPoint`, `writeTypesFile`, init / types / db / create / mcp handlers), `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/store/factory.ts` (`createStore`), `src/engine/init.ts` (`initProject`, `initDb`), `src/engine/agent-context.ts` (`renderAgentSection`, `upsertAgentsMd`), `src/engine/types-gen.ts` (`fetchCredentialTypes`, `jsonSchemaToTs`, `renderTypesFile`, `renderTsconfig`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/engine/generate.ts` (`createEntity`), `src/style.ts`, `src/debug.ts` (`redact`, `debugRequest`, `debugResponse`), `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (constructor, `req`).
+**Source:** `src/cli.ts` (`buildProgram`, `isEntryPoint`, `writeTypesFile`, init / types / db / create / mcp handlers), `src/context.ts` (`buildContext`), `src/env.ts` (`loadEnv`), `src/store/factory.ts` (`createStore`), `src/engine/init.ts` (`initProject`, `initDb`), `src/engine/agent-context.ts` (`renderAgentSection`, `upsertAgentsMd`), `src/engine/types-gen.ts` (`fetchCredentialTypes`, `jsonSchemaToTs`, `renderTypesFile`, `renderTsconfig`), `src/engine/backup.ts` (`dumpBackup`, `restoreBackup`), `src/engine/generate.ts` (`createEntity`; a credential's `data` from `src/engine/credential-examples.ts`), `src/style.ts`, `src/debug.ts` (`redact`, `debugRequest`, `debugResponse`), `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (constructor, `req`).
 
 ## 15. n8n API clients (2.x / 3.x)
 

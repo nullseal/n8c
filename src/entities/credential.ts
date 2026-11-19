@@ -174,7 +174,9 @@ export const credential: EntityDescriptor = {
           const sent = await sendWithSchemaDefaults(ctx, plain.type, plain.data ?? {},
             (data) => ctx.n8n!.createCredential({ name: plain.name, type: plain.type, data }));
           if (!sent.ok) {
-            throw new Error(`credential "${d.name}" (${plain.type}) must be CREATED on n8n (its mapped id no longer exists), `
+            // A prior mapping means the plan re-creates a credential whose n8n id is gone.
+            const why = prior?.id ? ' (its mapped id no longer exists)' : '';
+            throw new Error(`credential "${d.name}" (${plain.type}) must be CREATED on n8n${why}, `
               + `and a create needs the type's complete \`data\` — n8n requires ${sent.missing.join(', ')} and gives no default.\n`
               + `  Add the field(s) to the file, or create the credential in the n8n UI and run \`n8c pull\` to map it.`);
           }

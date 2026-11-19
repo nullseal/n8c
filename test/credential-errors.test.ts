@@ -168,11 +168,26 @@ test('create: fields with no default → a clear error (create needs COMPLETE da
     () => credential.pushToServer!(ctx, [{ localId: 'c1', name: 'OpenAI account', body: { name: 'OpenAI account', type: 'openAiApi', data: { apiKey: 'sk-x' } } }] as any, { c1: 'new' }),
     (e: Error) => {
       assert.match(e.message, /must be CREATED on n8n/);
+      assert.doesNotMatch(e.message, /mapped id/, 'a first create never had a mapped id');
       assert.match(e.message, /requires headerName, headerValue, allowedDomains and gives no default/);
       assert.match(e.message, /create the credential in the n8n UI and run `n8c pull`/);
       assert.ok(!e.message.includes('credential "OpenAI account": credential'), 'not double-prefixed');
       return true;
     },
+  );
+});
+
+test('re-create: when the mapped id is gone on n8n, the create error says so', async () => {
+  const { credential } = await import('../src/entities/credential.ts');
+  const raw = 'n8n POST /api/v1/credentials -> 400 {"message":"request.body.data requires property \\"apiKey\\""}';
+  const ctx = {
+    env: 'default', encrypted: false,
+    n8n: { createCredential: async () => { throw new Error(raw); } },
+    getDefinitions: async () => ({ c1: { id: 'GONE1', name: 'OpenAI account' } }),
+  } as any;
+  await assert.rejects(
+    () => credential.pushToServer!(ctx, [{ localId: 'c1', name: 'OpenAI account', body: { name: 'OpenAI account', type: 'openAiApi', data: {} } }] as any, { c1: 'new' }),
+    /must be CREATED on n8n \(its mapped id no longer exists\)/,
   );
 });
 
