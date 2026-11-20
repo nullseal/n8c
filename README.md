@@ -624,8 +624,8 @@ npm run build         # compile src/ → dist/ (what gets published)
 The **published package ships the compiled `dist/`** — Node disables type stripping for files under
 `node_modules`, so the CLI can't run from raw `.ts` once installed. `prepublishOnly` runs the tests
 and the build automatically. The unit tests cover the MongoDB adapter through an injected fake client
-(`test/mongo-store.test.ts`); a real MongoDB server and a real n8n push are exercised only by manual runs
-against live instances.
+(`test/mongo-store.test.ts`); a real MongoDB server is exercised only by manual runs against a live
+instance, and a real n8n by the [live smoke test](#live-smoke-test).
 
 ### Testing & coverage
 
@@ -660,6 +660,27 @@ from the last run:
 ```bash
 npx c8 report --reporter=html    # then open coverage/index.html
 ```
+
+### Live smoke test
+
+`scripts/live-smoke.mjs` runs the compiled CLI against a real n8n in Docker. It authors a credential,
+a workflow and a `src/` unit, then checks through n8n's own API that plan, apply, publishing,
+credential rotation, drift detection, drafts, `restore`, `pull`, descriptions, projects, `--destroy`
+and a wrong API key all behave as documented. Each run starts a throwaway n8n with its port bound to
+127.0.0.1, creates an owner account and an API key inside it, and removes the container at the end.
+It needs the docker CLI pointed at a running engine (with Rancher Desktop, set
+`DOCKER_HOST=unix://$HOME/.rd/docker.sock`); the first run of a version pulls its image, about 2 GB.
+
+```bash
+npm run build
+node scripts/live-smoke.mjs 3.3.0 5681 3     # n8n version, a free local port, n8nVersion
+node scripts/live-smoke.mjs 2.48.6 5682 2
+node scripts/live-smoke.mjs 2.14.2 5683 2
+```
+
+It exits 1 when any check fails and prints where its full log is. Checks for features an n8n release
+lacks are adjusted by version: no workflow description before 2.16, no archive endpoint before 2.15.
+Run it against a new n8n release before relying on n8c there.
 
 ## License
 
