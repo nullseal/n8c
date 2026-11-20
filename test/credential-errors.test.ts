@@ -168,11 +168,26 @@ test('create: fields with no default → a clear error (create needs COMPLETE da
     () => credential.pushToServer!(ctx, [{ localId: 'c1', name: 'OpenAI account', body: { name: 'OpenAI account', type: 'openAiApi', data: { apiKey: 'sk-x' } } }] as any, { c1: 'new' }),
     (e: Error) => {
       assert.match(e.message, /must be CREATED on n8n/);
+      assert.doesNotMatch(e.message, /mapped id/, 'a first create never had a mapped id');
       assert.match(e.message, /requires headerName, headerValue, allowedDomains and gives no default/);
       assert.match(e.message, /create the credential in the n8n UI and run `n8c pull`/);
       assert.ok(!e.message.includes('credential "OpenAI account": credential'), 'not double-prefixed');
       return true;
     },
+  );
+});
+
+test('re-create: when the mapped id is gone on n8n, the create error says so', async () => {
+  const { credential } = await import('../src/entities/credential.ts');
+  const raw = 'n8n POST /api/v1/credentials -> 400 {"message":"request.body.data requires property \\"apiKey\\""}';
+  const ctx = {
+    env: 'default', encrypted: false,
+    n8n: { createCredential: async () => { throw new Error(raw); } },
+    getDefinitions: async () => ({ c1: { id: 'GONE1', name: 'OpenAI account' } }),
+  } as any;
+  await assert.rejects(
+    () => credential.pushToServer!(ctx, [{ localId: 'c1', name: 'OpenAI account', body: { name: 'OpenAI account', type: 'openAiApi', data: {} } }] as any, { c1: 'new' }),
+    /must be CREATED on n8n \(its mapped id no longer exists\)/,
   );
 });
 
@@ -245,7 +260,7 @@ test('deleting a credential that is already gone on n8n (404) succeeds — delet
   ], s));
   const ctx = {
     env: 'default', encrypted: false, promptContentsEnabled: false,
-    n8n: { listWorkflows: async () => [], deleteCredential: async () => { throw new Error('n8n DELETE /api/v1/credentials/GONE -> 404 {"message":"Not Found"}'); } },
+    n8n: { listWorkflows: async () => [], deleteCredential: async () => { throw Object.assign(new Error('n8n DELETE /api/v1/credentials/GONE -> 404 {"message":"Not Found"}'), { status: 404 }); } },
     getDefinitions: (k: string) => store.getDefinitions('default', k),
   } as any;
   const state: State = {
@@ -279,4 +294,13 @@ test('a non-404 delete error still fails loudly', async () => {
   const done = await applyFromState(store, '/tmp', ctx, state);
   assert.equal(done.applied!.failed.length, 1, '403 is a real failure');
   assert.match(done.applied!.failed[0].error, /403/);
+});
+
+test('sendWithSchemaDefaults gives up with ok:false when every try is rejected again', async () => {
+  const { sendWithSchemaDefaults } = await import('../src/entities/credential.ts');
+  let tries = 0;
+  const send = async () => { tries += 1; throw new Error('data requires property "allowedDomains"'); };
+  const r = await sendWithSchemaDefaults({ env: 't' } as any, 'httpHeaderAuth', { a: 1 }, send, 2);
+  assert.equal(tries, 2);
+  assert.deepEqual(r, { ok: false, filled: ['allowedDomains'], missing: ['allowedDomains'] });
 });

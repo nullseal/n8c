@@ -22,6 +22,7 @@ test('initProject scaffolds config, dirs, env template, gitignore', () => {
     assert.doesNotMatch(gi, /^n8c\/$/m, 'n8c/ is committed, not ignored');
     assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"database":\s*"sqlite"/);
     assert.match(readFileSync(join(cwd, 'n8c.config.json'), 'utf8'), /"file":\s*"n8c\.sqlite"/);
+    assert.equal(JSON.parse(readFileSync(join(cwd, 'n8c.config.json'), 'utf8')).n8nVersion, '3');
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
@@ -56,4 +57,16 @@ test('initProject never clobbers an existing real .env', () => {
 test('MemoryStore.init reports replica set true (no-op)', async () => {
   const r = await new MemoryStore().init();
   assert.equal(r.replicaSet, true);
+});
+
+test('initProject appends missing ignores to an existing .gitignore, keeping what is there', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'n8c-init-'));
+  try {
+    writeFileSync(join(cwd, '.gitignore'), 'node_modules');
+    const touched = initProject(cwd);
+    assert.ok(touched.includes('.gitignore'));
+    const gi = readFileSync(join(cwd, '.gitignore'), 'utf8');
+    assert.ok(gi.startsWith('node_modules\n'), 'existing content kept, newline normalised');
+    assert.match(gi, /^dist\/?$/m);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

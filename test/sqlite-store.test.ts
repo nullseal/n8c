@@ -77,3 +77,30 @@ test('withTransaction rolls back on error', async () => {
     assert.deepEqual(await s.getLive('workflows'), [], 'insert rolled back');
   } finally { await s.close(); }
 });
+
+test('createSnapshot records a draft flag and message; a plain snapshot is not a draft', async () => {
+  const s = await freshStore();
+  try {
+    const docs = [{ localId: 'w1', name: 'W', body: {}, checksum: 'c' }];
+    await s.withTransaction((session) => s.createSnapshot('workflows', 'v1', docs, 'b1', session, 'wip', true));
+    await s.withTransaction((session) => s.createSnapshot('workflows', 'v2', docs, 'b2', session));
+    const [v1, v2] = await s.listVersions('workflows');
+    assert.deepEqual([v1.draft, v1.message], [true, 'wip']);
+    assert.deepEqual([v2.draft, v2.message], [false, undefined]);
+  } finally { await s.close(); }
+});
+
+test('a nested withTransaction joins the outer one; a throw rolls the whole transaction back', async () => {
+  const s = await freshStore();
+  try {
+    await assert.rejects(() => s.withTransaction(async (outer) => {
+      await s.putLive('prompts', [{ localId: 'p1', name: 'P', body: {}, checksum: 'c' }], outer);
+      await s.withTransaction((inner) => s.putLive('prompts', [{ localId: 'p2', name: 'P2', body: {}, checksum: 'c' }], inner)); // joins, no second BEGIN
+      throw new Error('boom');
+    }), /boom/);
+    assert.deepEqual(await s.getLive('prompts'), [], 'both writes rolled back');
+    // and the store is usable afterwards (txDepth reset)
+    await s.withTransaction((session) => s.putLive('prompts', [{ localId: 'p3', name: 'P3', body: {}, checksum: 'c' }], session));
+    assert.equal((await s.getLive('prompts')).length, 1);
+  } finally { await s.close(); }
+});

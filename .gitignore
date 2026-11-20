@@ -11,3 +11,4 @@ n8c-scratch.mjs
 .npmrc
 .superpowers/
 docs/plans/
+coverage/

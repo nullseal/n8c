@@ -86,3 +86,30 @@ test('renderTypesFile: no credential types → open index signature (still compi
   const file = renderTypesFile([]);
   assert.match(file, /\[type: string\]: Record<string, unknown>;/);
 });
+
+test('jsonSchemaToTs: allOf becomes an intersection', () => {
+  assert.equal(jsonSchemaToTs({ allOf: [{ type: 'string' }, { type: 'number' }] }), 'string & number');
+});
+
+test('jsonSchemaToTs: a schema with no usable type or properties falls back to Record<string, unknown>', () => {
+  assert.equal(jsonSchemaToTs({ type: 'null' }), 'Record<string, unknown>');
+});
+
+test('jsonSchemaToTs: nesting deeper than 4 levels degrades to Record<string, unknown>', () => {
+  let schema: any = { type: 'string' };
+  for (let i = 0; i < 6; i++) schema = { type: 'array', items: schema };
+  assert.equal(jsonSchemaToTs(schema), 'Record<string, unknown>[][][][][]');
+});
+
+test('jsonSchemaToTs: an object schema without `required` marks every field optional', () => {
+  const ts = jsonSchemaToTs({ type: 'object', properties: { a: { type: 'string' } } });
+  assert.match(ts, /a\?: string;/);
+});
+
+test('collectFieldDefaults: ignores a missing schema and gives up past 5 levels of nesting', async () => {
+  const { collectFieldDefaults } = await import('../src/engine/types-gen.ts');
+  assert.deepEqual(collectFieldDefaults(undefined), {});
+  let schema: any = { properties: { deep: { default: 'x' } } };
+  for (let i = 0; i < 7; i++) schema = { allOf: [schema] };
+  assert.deepEqual(collectFieldDefaults(schema), {});
+});

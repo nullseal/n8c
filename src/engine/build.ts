@@ -28,3 +28,19 @@ export async function buildSources(cwd: string): Promise<{ codeByNode: Record<st
   }
   return { codeByNode, units };
 }
+
+// The restored workflow nodes whose code a src/<unit> replaces, as
+// "<workflow> → <node>". `restore` brings back a generation's own copy of each
+// node's code, but src/ is the repo's source and part of no generation, so plan and
+// apply inline the unit's CURRENT build there. A node whose restored code already
+// equals that build is left out: nothing differs.
+export function unitOverrides(docs: { name: string; body: unknown }[], codeByNode: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const d of docs) {
+    for (const n of (d.body as any).nodes ?? []) {
+      const built = codeByNode[n.id];
+      if (built !== undefined && built !== n.parameters?.jsCode) out.push(`${d.name} → ${n.name}`);
+    }
+  }
+  return out;
+}

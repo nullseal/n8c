@@ -13,6 +13,7 @@ const DEFAULT_CONFIG = {
   sqlite: { file: 'n8c.sqlite' },
   root: 'n8c',
   defaultEnv: 'default',
+  n8nVersion: '3', // n8n major to talk to: '2' | '3'
   n8nProjectId: '', // '' = the API key's default project; set to scope to one n8n project
   collectionPrefix: 'n8c_',
   collections: resolveCollections(),

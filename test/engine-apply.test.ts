@@ -61,3 +61,34 @@ test('dry run writes nothing', async () => {
     assert.equal((await store.listVersions('prompts')).length, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('diffNodes: nodes keyed by name when they have no id, and missing bodies/nodes lists count as empty', async () => {
+  const { diffNodes } = await import('../src/engine/apply.ts');
+  assert.deepEqual(diffNodes(undefined, undefined), []);
+  assert.deepEqual(diffNodes({}, { nodes: [] }), []);
+  const rows = diffNodes(
+    { nodes: [{ name: 'OnlyName', parameters: { a: 1 } }, { id: 'only-id', parameters: {} }] },
+    { nodes: [{ name: 'OnlyName', parameters: { a: 1 } }, { name: 'Gone' }, { id: 'gone-id' }] },
+  );
+  const by = (id: string) => rows.find((r) => r.id === id)!;
+  assert.equal(by('OnlyName').status, 'identical');
+  assert.deepEqual([by('only-id').name, by('only-id').status], ['only-id', 'new'], 'name falls back to the id');
+  assert.equal(by('Gone').status, 'removed');
+  assert.equal(by('gone-id').status, 'removed');
+});
+
+test('planApply: a nameless entity is named by its localId, and a new workflow lists its nodes as new', async () => {
+  const { workflow } = await import('../src/entities/workflow.ts');
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    writeEntity(root, 'workflows', 'wf-1', {}, { name: 'W', nodes: [{ id: 'n1', name: 'A', parameters: {} }], connections: {} });
+    const store = new MemoryStore();
+    const plan = await planApply(store, workflow, root, ctx());
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].status, 'new');
+    assert.deepEqual(plan[0].nodes!.map((n) => [n.id, n.status]), [['n1', 'new']]);
+    const r = await applyEntity(store, workflow, root, ctx(), { dry: false });
+    assert.equal((await store.getLive('workflows'))[0].name, 'wf-1', 'no metadata.name → localId');
+    assert.ok(r.versionId);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

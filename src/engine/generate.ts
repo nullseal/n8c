@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CREDENTIAL_DATA_EXAMPLE } from './credential-examples.ts';
 
 const APPLY_TEMPLATE = `export default {\n  // TODO: return the entity JSON\n};\n`;
 
-// Reserved node companion stubs — commented so they're inert until filled in
-// (an absent default export → the builder skips that companion).
+// Reserved node companion stubs — comments only, so they're inert until filled in
+// (src/layout.ts treats a companion file that holds only comments as absent).
 const NODE_CODE_STUB = [
   '// Code-node body → parameters.jsCode. Two forms (uncomment one):',
   '//',
@@ -16,24 +17,30 @@ const NODE_CODE_STUB = [
   '// return items.map(i => ({ json: { ...i.json } }));',
   '',
 ].join('\n');
-const NODE_CONNECTION_STUB = `// Outgoing connections of this node (node = TARGET nodeId). Or use \`n8c node set-connection\`.\n// export default { main: [[{ node: '<targetNodeId>', type: 'main', index: 0 }]] };\n`;
-const NODE_OTHER_HINT = `\n// Other reserved companions (add a file when needed):\n//   prompt.ts       → export default { key: 'my_prompt', content: '...' }  (extracted to n8c_prompts)\n//   credentials.ts  → export default { httpHeaderAuth: '<credentialLocalId>' }  (remapped at push)\n`;
+const NODE_CONNECTION_STUB = `// Outgoing connections of this node (node = TARGET nodeId).\n// export default { main: [[{ node: '<targetNodeId>', type: 'main', index: 0 }]] };\n`;
+const NODE_OTHER_HINT = `\n// Other reserved companions (add a file when needed):\n//   prompt.ts       → export default { key: 'my_prompt', content: '...' }  (plan checks its key is unique; n8c does not store it)\n//   credentials.ts  → export default { httpHeaderAuth: '<credentialLocalId>' }  (remapped at push)\n`;
 
-// Env var name derived from a credential name: uppercase, non-alnum -> _.
-function envVarName(name: string): string {
-  return (name || 'credential').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') + '_TOKEN';
+// Env var prefix derived from a credential name: uppercase, non-alnum -> _.
+function envPrefix(name: string): string {
+  return (name || 'credential').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
 // Credential apply.ts reads its secret from the environment (.env.<env>) via
-// `process.env.<VAR>` so no secret is ever hard-coded in a source file.
+// `process.env.<VAR>` so no secret is ever hard-coded in a source file. `data`
+// must use the type's own field names (n8n rejects any other key): n8c's example
+// for the type, its MY_ placeholders renamed after the credential, or — for a type
+// n8c has no example for — a TODO rather than a guessed key.
 function credentialTemplate(name: string, type: string): string {
-  const envName = envVarName(name);
-  return `export default {\n` +
-    `  name: ${JSON.stringify(name)},\n` +
-    `  type: ${JSON.stringify(type || 'httpHeaderAuth')},\n` +
-    `  // Secret comes from .env — the source file holds only the reference, never the secret:\n` +
-    `  data: { token: process.env.${envName} },\n` +
-    `};\n`;
+  const t = type || 'httpHeaderAuth';
+  const prefix = envPrefix(name);
+  const example = CREDENTIAL_DATA_EXAMPLE[t];
+  const data = example
+    ? `  // Secret comes from .env — the source file holds only the reference, never the secret:\n`
+      + `  data: ${example.replace(/\bMY_/g, `${prefix}_`)},\n`
+    : `  // TODO: add ${t}'s fields to \`data\`. n8n defines them; \`n8c types\` writes them to n8c.types.ts.\n`
+      + `  // Read each secret from .env, never write it here, e.g. { someField: process.env.${prefix}_TOKEN }\n`
+      + `  data: {},\n`;
+  return `export default {\n  name: ${JSON.stringify(name)},\n  type: ${JSON.stringify(t)},\n${data}};\n`;
 }
 const TYPE_TO_KIND: Record<string, string> = { workflow: 'workflows', prompt: 'prompts', credential: 'credentials' };
 

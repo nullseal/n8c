@@ -23,3 +23,9 @@ test('short hex / short ids are not flagged', () => {
   const body = { nodes: [{ name: 'X', parameters: { credId: 'gVghO1VDRwZwtbpa', hex: 'deadbeef' } }] };
   assert.deepEqual(scanWorkflowSecrets(body), []);
 });
+
+test('a missing body, a workflow without nodes, and a node without parameters yield no findings', () => {
+  assert.deepEqual(scanWorkflowSecrets(undefined), []);
+  assert.deepEqual(scanWorkflowSecrets({ name: 'no nodes' }), []);
+  assert.deepEqual(scanWorkflowSecrets({ nodes: [{ name: 'Bare' }] }), []);
+});

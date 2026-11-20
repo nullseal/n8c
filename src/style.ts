@@ -3,7 +3,6 @@
 // NO_COLOR is set — so piped / `--pipe` output stays raw and parseable.
 let enabled = false;
 export function setStyle(on: boolean): void { enabled = on; }
-export function styleEnabled(): boolean { return enabled; }
 
 const RESET = '\x1b[0m';
 function wrap(code: string, s: string): string { return enabled && s ? `${code}${s}${RESET}` : s; }
@@ -17,8 +16,8 @@ export const ok = (s: string): string => wrap('\x1b[1;32m', s);     // bold gree
 export const danger = (s: string): string => wrap('\x1b[1;31m', s); // bold red — destructive drift / data at risk
 
 // Colour a plan/node status word: new=green, changed=yellow, removed=red,
-// identical=dim. Unknown words pass through uncoloured.
+// identical=dim, and a failed apply row red. Unknown words pass through uncoloured.
 export function status(s: string): string {
-  const code: Record<string, string> = { new: '\x1b[32m', changed: '\x1b[33m', removed: '\x1b[31m', identical: '\x1b[2m' };
+  const code: Record<string, string> = { new: '\x1b[32m', changed: '\x1b[33m', removed: '\x1b[31m', failed: '\x1b[31m', identical: '\x1b[2m' };
   return wrap(code[s] ?? '', s);
 }

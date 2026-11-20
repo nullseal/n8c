@@ -15,6 +15,10 @@ export interface Resource {
   kind: string; localId: string; name: string; action: Action;
   fromChecksum: string | null; toChecksum: string | null;
   nodes?: { name: string; status: string }[];
+  // Fields outside `nodes` that a push would change (name, description, connections,
+  // settings.*, nodeGroups; never staticData, which diffPushedFields skips). Display
+  // only — apply pushes the whole body.
+  fields?: string[];
   setActive?: boolean; // workflows: activate/deactivate to reach the desired state
   archived?: boolean;  // a delete of an already-archived workflow → hard delete, not archive
   // workflows only, deletes only: the n8n id read off the server at plan time. A
@@ -22,6 +26,10 @@ export interface Resource {
   // its mapping was dropped by an earlier destroy), and then `localId` is a UUID
   // invented for this run — this is the only handle apply can delete by.
   serverId?: string;
+  // Stamped with `applied.at` once apply has carried this row out. A later apply of
+  // the same saved plan skips stamped rows, so retrying after a partial failure
+  // re-runs only what failed or was never reached — never a create that succeeded.
+  appliedAt?: string;
 }
 // An entity that still exists in the DB / on n8n but has no file — planned as a
 // delete only with --destroy, otherwise reported so `plan` never hides it.
@@ -136,6 +144,8 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
     try { serverFacts = await readServerFacts(ctx, { credentials: rawCredentials }); } catch { /* no baseline recorded this run */ }
   }
 
+  // Built units (src/<unit>) for the workflow diff below — the same inlined code
+  // applyFromState pushes, so plan compares against n8n what apply would deploy.
   const codeByNode = (await buildSources(dirname(root))).codeByNode;
   const resources: Resource[] = [];
 
@@ -218,7 +228,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
   }
 
   // workflows: diff desired files vs the live n8n server
-  const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx);
+  const rows = await planAgainstServer(store, entityByKind['workflows'], root, ctx, codeByNode);
   for (const r of rows) {
     if (r.status === 'removed') {
       // File deleted locally. On a shared instance never delete implicitly — report
@@ -242,6 +252,7 @@ export async function computePlan(store: Store, root: string, ctx: EntityContext
       fromChecksum: action === 'create' ? null : (r.checksum || null),
       toChecksum: r.checksum || null,
       nodes: (r.nodes ?? []).filter((n: any) => n.status !== 'identical').map((n: any) => ({ name: n.name, status: n.status })),
+      fields: r.fields,
       setActive: r.setActive,
     });
   }

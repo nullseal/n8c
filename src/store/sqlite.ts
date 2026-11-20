@@ -1,10 +1,10 @@
-import './sqlite-quiet.ts'; // must precede loading node:sqlite — silences its experimental warning
+import '../quiet-warnings.ts'; // must precede loading node:sqlite — silences its experimental warning
 import { createRequire } from 'node:module';
 import type { Store, Doc, ManifestEntry, Session, StoreCapabilities } from './store.ts';
 import { mappingRows } from '../engine/cred-map.ts';
 
 // Load node:sqlite at RUNTIME (require, not a static import) so the warning fires
-// after sqlite-quiet has installed its filter — a static `import 'node:sqlite'`
+// after quiet-warnings has installed its filter — a static `import 'node:sqlite'`
 // is linked before any user module evaluates, so the warning would slip through.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 

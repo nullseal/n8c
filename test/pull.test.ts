@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { prompt } from '../src/entities/prompt.ts';
-import { pullEntity, commitPullGeneration } from '../src/engine/pull.ts';
+import { pullEntity, commitPullGeneration, isKindChanged } from '../src/engine/pull.ts';
 import { exportDocs } from '../src/engine/transfer.ts';
 import { checksum } from '../src/checksum.ts';
 
@@ -86,4 +86,14 @@ test('exportDocs renders straight from docs, no store lookup', async () => {
     assert.match(applyTs, /"key": "main"/);
     assert.ok(existsSync(join(root, 'prompts', 'p1', 'metadata.json')));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('isKindChanged: a kind is changed only when its content differs from the active member', () => {
+  const doc = [{ localId: 'a', name: 'a', body: {}, checksum: 'a' }];
+  const res = (cs: string, docs: any[]) => ({ kind: 'credentials', count: docs.length, checksum: cs, docs });
+  assert.equal(isKindChanged({ kind: 'credentials', checksum: 'x' }, res('x', doc)), false, 'same checksum');
+  assert.equal(isKindChanged({ kind: 'credentials', checksum: 'x' }, res('y', doc)), true, 'different checksum');
+  assert.equal(isKindChanged({ kind: 'credentials', checksum: 'x' }, res('e', [])), true, 'member, now empty');
+  assert.equal(isKindChanged(undefined, res('e', [])), false, 'no member, empty');
+  assert.equal(isKindChanged(undefined, res('y', doc)), true, 'no member, has docs');
 });

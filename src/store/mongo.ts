@@ -12,7 +12,7 @@ export class MongoStore implements Store {
   private client: MongoClient;
   private dbName: string;
   private cols: Collections;
-  constructor(uri: string, dbName: string, collections?: Collections) { this.client = new MongoClient(uri); this.dbName = dbName; this.cols = collections ?? resolveCollections(); }
+  constructor(uri: string, dbName: string, collections?: Collections, client?: MongoClient) { this.client = client ?? new MongoClient(uri); this.dbName = dbName; this.cols = collections ?? resolveCollections(); }
   private db() { return this.client.db(this.dbName); }
   private col(kind: string) { return this.db().collection(collectionForKind(this.cols, kind)); }
   async connect() { await this.client.connect(); return this; }

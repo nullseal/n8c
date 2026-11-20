@@ -26,7 +26,7 @@ n8c pull       # import the live n8n instance into files (overwrites and prunes 
 n8c plan       # diff files vs live n8n — run after EVERY edit, review before apply
 n8c apply      # deploy; refuses if n8n drifted since plan (then: re-run n8c plan)
 n8c list       # releases, newest first — every apply is a restorable generation
-n8c restore <generation>   # roll everything back to a known-good release
+n8c restore <generation>   # roll ${root}/ back to a known-good release (src/ unit code stays current)
 \`\`\`
 
 Layout:

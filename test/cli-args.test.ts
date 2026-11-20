@@ -203,6 +203,7 @@ test('renderPlanOrphans points at --destroy, and marks an already-archived workf
   const arch = renderPlanOrphans([{ kind: 'workflows', name: 'Old Flow', archived: true }]);
   assert.ok(arch.includes('already archived on n8n'), 'explains why it is still listed after a destroy');
   assert.ok(arch.includes('permanently'), 'says what the next --destroy will do');
+  assert.ok(arch.includes('before 2.15'), 'says the archive step is missing on older n8n');
 });
 
 test('renderResourceId shows the localId, suppressed only when it just repeats the name', () => {

@@ -37,6 +37,18 @@ export async function validateAll(root: string, ctx: EntityContext, _store: Stor
     const nodes: any[] = (body as any).nodes ?? [];
     const wfName = metadata.name ?? wid;
 
+    // (0) the workflow name lives in TWO places for a flat workflow (apply.ts +
+    // metadata.json): metadata drives every display, the body is what gets PUSHED.
+    // Renaming one and not the other is silent and backwards — `plan` prints the new
+    // name (read from metadata) while n8n keeps the old one (from the body). Refuse
+    // the plan instead. Exploded workflows build the body FROM metadata, so their two
+    // names cannot disagree and this never fires.
+    const bodyName = (body as any)?.name;
+    if (bodyName !== undefined && metadata.name !== undefined && bodyName !== metadata.name) {
+      problems.push(`workflow ${wid}: name mismatch — metadata.json says "${metadata.name}" but apply.ts returns "${bodyName}". ` +
+        `n8n is given the apply.ts name; rename in both files so the plan and the deploy agree.`);
+    }
+
     // (1) credential mappings present — grouped by credential id, listing the
     // node names that use it (readable, deduplicated).
     const missingCreds = new Map<string, string[]>();

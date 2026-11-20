@@ -62,3 +62,29 @@ test('materialize → readEntity round-trips the workflow', async () => {
     assert.deepEqual(r.body, body); // exact round-trip incl. template-literal jsCode
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('materialize: nameless / symbol-only / digit-led / duplicate node names all get unique valid identifiers', () => {
+  const src = materializeWorkflowSource({ nodes: [
+    { id: '1' },                // no name at all
+    { id: '2', name: '' },      // empty name
+    { id: '3', name: '***' },   // nothing left after stripping symbols
+    { id: '4', name: '3rd step' },
+    { id: '5', name: 'dup' },
+    { id: '6', name: 'dup' },
+  ] });
+  for (const decl of ['const node =', 'const node_2 =', 'const node_3 =', 'const n_3rd_step =', 'const dup =', 'const dup_2 =']) {
+    assert.ok(src.includes(decl), `declares ${decl}`);
+  }
+  assert.ok(src.includes('"nodes": [node, node_2, node_3, n_3rd_step, dup, dup_2]'), 'wires all slugs into nodes');
+});
+
+test('materialize: a missing body yields an empty workflow with no nodes and empty connections', () => {
+  const src = materializeWorkflowSource(undefined);
+  assert.ok(src.includes('"nodes": []'));
+  assert.ok(src.includes('"connections": {}'));
+});
+
+test('materialize: a body without nodes still emits the workflow shell', () => {
+  const src = materializeWorkflowSource({ name: 'Shell' });
+  assert.ok(src.includes('"name": "Shell"') && src.includes('"nodes": []'));
+});

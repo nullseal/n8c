@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildContext } from './context.ts';
 import { checksum } from './checksum.ts';
 import { entityByKind } from './entities/index.ts';
 import { listEntity } from './engine/list.ts';
-import { pullEntity } from './engine/pull.ts';
+import { pullEntity, isKindChanged, commitPullGeneration } from './engine/pull.ts';
 import { exportVersion, exportDocs } from './engine/transfer.ts';
+import { buildSources, unitOverrides } from './engine/build.ts';
 import { createEntity } from './engine/generate.ts';
 import { initProject, initDb } from './engine/init.ts';
 import { verifyBeforeApply, refreshedServerFacts } from './engine/verify.ts';
@@ -65,16 +66,24 @@ export function renderPlanOrphans(orphans: { kind: string; name: string; archive
   const lines = [danger(`\n! ${orphans.length} ${one ? 'entity exists' : 'entities exist'} on n8n/in the DB but ${one ? 'no longer has a file' : 'no longer have files'}:`)];
   for (const o of orphans) lines.push(danger(`    ${KIND_TO_SINGULAR[o.kind] ?? o.kind}  ${o.name}${o.archived ? '  (already archived on n8n)' : ''}`));
   lines.push(dim(`  re-run with \`--destroy\` to plan ${one ? 'its' : 'their'} removal.`));
-  if (orphans.some((o) => o.archived)) lines.push(dim('  an already-archived workflow is deleted permanently; a live one is archived first.'));
+  if (orphans.some((o) => o.archived)) lines.push(dim('  an already-archived workflow is deleted permanently; a live one is archived first (deleted permanently on n8n before 2.15, which has no archive endpoint).'));
   return lines.join('\n');
+}
+
+// What is actually changing, in parentheses after the name: the workflow fields a
+// push would rewrite (name, connections, settings.executionOrder, …) followed by
+// the drifting node names. Without the field half, a rename showed up as a bare
+// "changed" with nothing to explain it.
+export function renderChangedParts(r: { fields?: string[]; nodes?: { name: string }[] }): string {
+  const parts = [...(r.fields ?? []), ...(r.nodes ?? []).map((n) => n.name)];
+  return parts.length ? '  (' + parts.join(', ') + ')' : '';
 }
 
 function printPlanSummary(state: { summary: any; resources: any[]; orphans?: any[]; ignored?: any[] }): void {
   for (const r of state.resources) {
     if (r.action === 'noop') continue;
     const type = KIND_TO_SINGULAR[r.kind] ?? r.kind;
-    const nodes = r.nodes?.length ? '  (' + r.nodes.map((n: any) => n.name).join(', ') + ')' : '';
-    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${renderResourceId(r)}${r.name}${nodes}`);
+    console.log(`  ${styleStatus(ACTION_STATUS[r.action])} ${ACTION_SIGN[r.action]} ${type}  ${renderResourceId(r)}${r.name}${renderChangedParts(r)}`);
   }
   const s = state.summary;
   console.log(`Plan: ${s.create} to create, ${s.update} to update, ${s.delete} to destroy.`);
@@ -99,7 +108,7 @@ function printApplied(state: { resources: any[]; applied: { ok: string[]; failed
   }
   for (const f of a.failed) {
     const r = byId.get(f.localId);
-    console.error(`  ${styleStatus('removed')} ✗ ${KIND_TO_SINGULAR[r?.kind] ?? ''} ${r?.name ?? f.localId} — ${f.error}`);
+    console.error(`  ${styleStatus('failed')} ✗ ${KIND_TO_SINGULAR[r?.kind] ?? ''} ${r?.name ?? f.localId} — ${f.error}`);
   }
   console.log(`Apply complete: ${a.ok.length} applied, ${a.failed.length} failed.`);
 }
@@ -121,6 +130,15 @@ function printSecretWarnings(warnings: string[]): void {
   if (!warnings.length) return;
   console.error(`  ⚠ possible hardcoded secret(s) in exported files (n8c/ is committed — scrub & rotate):`);
   for (const w of warnings) console.error(`    - ${w}`);
+}
+
+// After a restore: the nodes whose restored code a src/<unit> replaces (unitOverrides).
+function printUnitOverrides(nodes: string[]): void {
+  if (!nodes.length) return;
+  const one = nodes.length === 1;
+  console.log(notice(`! ${nodes.length} restored ${one ? 'node takes its' : 'nodes take their'} code from a src/ unit, which restore does not roll back — n8n gets the unit's current code:`));
+  for (const n of nodes) console.log(`    ${n}`);
+  console.log(`  Restore the unit's source too (e.g. with git) to roll that code back, then plan and apply.`);
 }
 
 export interface GenerationMember { kind: string; checksum: string; }
@@ -197,6 +215,8 @@ export function renderGeneration(g: Generation, full: boolean): string {
 // `data` fields. Returns the file path.
 async function writeTypesFile(store: any, ctx: any, root: string): Promise<string> {
   const { fetchCredentialTypes, renderTypesFile, renderTsconfig } = await import('./engine/types-gen.ts');
+  // `init` creates no root and pull writes types before any entity file, so a fresh project has none yet
+  mkdirSync(root, { recursive: true });
   const types = new Set<string>();
   for (const d of await store.getLive('credentials')) { const t = (d.body as any)?.type; if (t) types.add(String(t)); }
   try { for (const c of (await ctx.n8n?.listCredentials?.()) ?? []) if (c?.type) types.add(String(c.type)); } catch { /* not listable */ }
@@ -336,7 +356,7 @@ export function buildProgram(): Command {
   program.command('apply')
     .description('execute the saved plan from `n8c plan` (push to n8n, then commit the DB)')
     .option('--force', 'compute a fresh plan and apply it in one step (no saved plan needed, like `terraform apply`)')
-    .option('--destroy', 'with --force: include workflow deletes (archive) for server-only workflows')
+    .option('--destroy', 'with --force: include workflow deletes for server-only workflows: archived (deleted permanently on n8n before 2.15, which has no archive endpoint)')
     .option('-m, --message <msg>', 'note recorded on the release (shown in `n8c list`)')
     .option('--no-verify', 're-check nothing on n8n before applying (not recommended)')
     .action(async (opts) => {
@@ -352,6 +372,10 @@ export function buildProgram(): Command {
           if (await desiredBundleChecksum(root, ctx) !== state.desiredChecksum) throw new Error('files changed since plan; re-run `n8c plan` (or `n8c apply --force`)');
         }
         printPlanSummary(state); // show what will be applied (with ids) — for a saved plan too, not only --force
+        // A retry of a partially-applied plan: the summary above still lists the rows
+        // an earlier attempt carried out, but they are stamped and will be skipped.
+        const resumed = state.resources.filter((r) => r.appliedAt).length;
+        if (resumed) console.log(notice(`! resuming this plan — skipping ${resumed} change(s) an earlier attempt already applied`));
 
         // Guard against a stale plan: the files are checked via desiredChecksum, but the
         // INSTANCE can move too (someone edits a workflow in the n8n UI, deletes a
@@ -464,13 +488,12 @@ export function buildProgram(): Command {
         // Phase 2 — commit ONE generation for the whole pull (like apply), but only
         // if something actually differs from the currently-active generation.
         const activeGen = groupByGeneration(await readGenerations(store, ctx)).find((x) => x.active);
-        const changedKinds = pulled.filter((p) => activeGen?.members.find((m) => m.kind === p.kind)?.checksum !== p.result.checksum);
+        const changedKinds = pulled.filter((p) => isKindChanged(activeGen?.members.find((m) => m.kind === p.kind), p.result));
         for (const p of pulled) {
           const changed = changedKinds.includes(p);
           console.log(`pulled ${p.g} ${p.result.count} — ${hash(p.result.checksum.slice(0, 8))} — ${changed ? 'changed' : dim('no changes')}`);
         }
         if (changedKinds.length) {
-          const { commitPullGeneration } = await import('./engine/pull.ts');
           const { nextVersionId } = await import('./version.ts');
           const generation = nextVersionId();
           await commitPullGeneration(store, generation, pulled.map((p) => p.result), opts.message);
@@ -575,6 +598,12 @@ export function buildProgram(): Command {
           if (!versions.some((v: any) => v.versionId === vid)) continue; // not part of this generation
           printSecretWarnings(await exportVersion(store, entityByKind[kind], root, vid, ctx));
           console.log(`restored ${KIND_TO_SINGULAR[kind] ?? kind} → files.`);
+          if (kind === 'workflows') {
+            // A unit that does not build must not block a rollback of the files: plan
+            // reports the build error, and until it builds there is nothing to compare.
+            const units = await buildSources(dirname(root)).catch(() => undefined);
+            if (units) printUnitOverrides(unitOverrides(await store.getVersion(kind, vid), units.codeByNode));
+          }
         }
         console.log(`generation ${hash(ref)} (${vid}) restored.`);
         if (!opts.apply) { console.log('Run `n8c plan` to preview, `n8c apply` to deploy.'); return; }

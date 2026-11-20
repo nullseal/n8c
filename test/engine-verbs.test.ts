@@ -64,3 +64,56 @@ test('export then import round-trips a version', async () => {
     rmSync(root2, { recursive: true, force: true });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+async function storeWithPromptVersion() {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  const store = new MemoryStore();
+  writeEntity(root, 'prompts', 'p1', { name: 'greet' }, { key: 'greet', content: 'v1' });
+  const a1 = await applyEntity(store, prompt, root, ctx(), { dry: false });
+  return { root, store, versionId: a1.versionId! };
+}
+
+test('restore of a server-backed kind pushes docs and stores the returned definitions', async () => {
+  const { root, store, versionId } = await storeWithPromptVersion();
+  try {
+    const seen: any[] = [];
+    const desc: any = {
+      kind: 'prompts', hasServer: true,
+      pushToServer: async (_c: any, docs: any[], status: any) => { seen.push({ ids: docs.map((d) => d.localId), status }); return { p1: 'srv-1' }; },
+    };
+    const c = { ...ctx(), n8n: {} };
+    await restoreEntity(store, desc, c, versionId);
+    assert.deepEqual(seen, [{ ids: ['p1'], status: { p1: 'identical' } }]);
+    assert.deepEqual(await store.getDefinitions('test', 'prompts'), { p1: 'srv-1' });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('restore writes no definitions when the server push returns an empty mapping', async () => {
+  const { root, store, versionId } = await storeWithPromptVersion();
+  try {
+    const desc: any = { kind: 'prompts', hasServer: true, pushToServer: async () => ({}) };
+    await restoreEntity(store, desc, { ...ctx(), n8n: {} }, versionId);
+    assert.deepEqual(await store.getDefinitions('test', 'prompts'), {});
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('restore throws when the version does not exist', async () => {
+  const store = new MemoryStore();
+  await assert.rejects(() => restoreEntity(store, prompt, ctx(), 'ghost'), /version ghost not found for prompts/);
+});
+
+test('restore passes "changed" for a doc whose live checksum differs and "new" for one absent from live', async () => {
+  const { root, store, versionId } = await storeWithPromptVersion();
+  try {
+    const seen: any[] = [];
+    const desc: any = { kind: 'prompts', hasServer: true, pushToServer: async (_c: any, _d: any[], status: any) => { seen.push(status); return {}; } };
+    const c = { ...ctx(), n8n: {} };
+    // live holds p1 with a different checksum → changed
+    await store.withTransaction((s) => store.putLive('prompts', [{ localId: 'p1', name: 'greet', body: { key: 'greet', content: 'drifted' }, checksum: 'other' }], s));
+    await restoreEntity(store, desc, c, versionId);
+    // live no longer holds anything for p1 → new
+    await store.withTransaction((s) => store.putLive('prompts', [], s));
+    await restoreEntity(store, desc, c, versionId);
+    assert.deepEqual(seen, [{ p1: 'changed' }, { p1: 'new' }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

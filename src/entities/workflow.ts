@@ -14,11 +14,11 @@ const META_KEY = 'n8cLocalId';
 // read-only and makes the request 400 — so we whitelist rather than blacklist.
 // (per the `workflow` schema, additionalProperties:false; `pinData` is intentionally
 // NOT pushed — pins would override production execution.)
-const WRITABLE = ['name', 'description', 'nodes', 'connections', 'settings', 'staticData', 'nodeGroups'] as const;
+export const WRITABLE = ['name', 'description', 'nodes', 'connections', 'settings', 'staticData', 'nodeGroups'] as const;
 // n8n's GET returns MORE settings keys than its PUT/POST schema accepts (UI/instance
 // extras like binaryMode/timeSavedMode → 400 "settings must NOT have additional
 // properties"). Whitelist exactly the Public-API (1.1.x) workflowSettings keys.
-const WRITABLE_SETTINGS = ['saveExecutionProgress', 'saveManualExecutions', 'saveDataErrorExecution', 'saveDataSuccessExecution', 'executionTimeout', 'executionOrder', 'errorWorkflow', 'timezone', 'callerPolicy', 'callerIds', 'timeSavedPerExecution', 'redactionPolicy', 'availableInMCP', 'customTelemetryTags'] as const;
+export const WRITABLE_SETTINGS = ['saveExecutionProgress', 'saveManualExecutions', 'saveDataErrorExecution', 'saveDataSuccessExecution', 'executionTimeout', 'executionOrder', 'errorWorkflow', 'timezone', 'callerPolicy', 'callerIds', 'timeSavedPerExecution', 'redactionPolicy', 'availableInMCP', 'customTelemetryTags'] as const;
 // The node schema is additionalProperties:false too — a node key n8n's GET returns
 // but its PUT rejects (or the readOnly createdAt/updatedAt) would 400. Strip nodes
 // to the API-accepted keys.
@@ -86,13 +86,18 @@ export const workflow: EntityDescriptor = {
       // unchanged & already deployed → keep the id, skip the re-PUT (which republishes).
       if (existingId && status?.[d.localId] === 'identical') { mapping[d.localId] = existingId; continue; }
       const remapped = await this.beforePush!(ctx, d.body, defs) as any;
-      if (existingId) { await ctx.n8n!.updateWorkflow(existingId, remapped); mapping[d.localId] = existingId; }
+      // staticData is n8n's live runtime state (polling cursors, dedupe keys). n8n's
+      // update persists it when sent (WorkflowService.update lists 'staticData' in
+      // fieldsToUpdate), so re-sending the last-pulled copy would rewind it. Send it on
+      // create only: a from-scratch deploy or restore stays seeded with the pulled state.
+      if (existingId) { delete remapped.staticData; await ctx.n8n!.updateWorkflow(existingId, remapped); mapping[d.localId] = existingId; }
       else { const created = await ctx.n8n!.createWorkflow(remapped); mapping[d.localId] = String(created.id); } // deploy from scratch
     }
     return mapping;
   },
   async pullFromServer(ctx) {
-    const wfs = await ctx.n8n!.listWorkflows();
+    // n8n's list omits `description`; this asks the client to fetch it per workflow.
+    const wfs = await ctx.n8n!.listWorkflows({ descriptions: true });
     const defs = await ctx.getDefinitions('workflows'); // localId -> n8nId
     const byN8nId = new Map(Object.entries(defs).map(([lid, nid]) => [String(nid), lid]));
     return wfs.map((w: any) => {
@@ -103,7 +108,9 @@ export const workflow: EntityDescriptor = {
         settings: w.settings ?? {},
         meta: { ...(w.meta ?? {}), [META_KEY]: localId },
       };
-      if (w.description !== undefined) body.description = w.description;
+      // n8n reports "no description" as null, and 2.16+ reject a null one on a push
+      // (400 "Expected string, received null"): keep only real text.
+      if (typeof w.description === 'string' && w.description !== '') body.description = w.description;
       if (w.nodeGroups) body.nodeGroups = w.nodeGroups;
       if (w.staticData) body.staticData = w.staticData;
       if (w.pinData) body.pinData = w.pinData;

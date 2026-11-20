@@ -149,11 +149,124 @@ test('planAgainstServer marks rows whose server workflow is archived', async () 
       getDefinitions: async () => ({}),
     } as any;
 
-    const rows = await planAgainstServer(new MemoryStore(), (await import('../src/entities/index.ts')).entityByKind['workflows'], root, ctx);
+    const rows = await planAgainstServer(new MemoryStore(), (await import('../src/entities/index.ts')).entityByKind['workflows'], root, ctx, {});
     const keep = rows.find((r) => r.localId === 'liveLocal')!;
     const arch = rows.find((r) => r.localId === 'archLocal')!;
     assert.equal(keep.archived, false, 'live workflow not archived');
     assert.equal(arch.archived, true, 'server-only archived workflow flagged');
     assert.equal(arch.status, 'removed', 'no local file → removed (deletable)');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- fields outside `nodes` (rename & friends) -------------------------------
+// `plan` used to decide changed-vs-identical from the nodes array and the active
+// flag alone, so renaming a workflow — the one field n8n shows you — was a silent
+// no-op: the plan printed the NEW name (read from the file) next to "identical".
+const named = (name: string, extra: any = {}) => ({ name, nodes: [{ id: 'n1', name: 'A', parameters: { x: 1 } }], connections: {}, ...extra });
+
+test('planDiff: renaming the workflow is a change (name is pushed, so it must be diffed)', () => {
+  const r = planDiff(named('New Name'), named('Old Name'));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['name']);
+});
+
+test('planDiff: rewiring connections is a change even when every node is identical', () => {
+  const r = planDiff(named('W', { connections: { A: { main: [[{ node: 'B', type: 'main', index: 0 }]] } } }), named('W'));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['connections']);
+});
+
+test('planDiff: changing a settings value the file sets is a change', () => {
+  const r = planDiff(named('W', { settings: { executionOrder: 'v1' } }), named('W', { settings: { executionOrder: 'v0' } }));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['settings.executionOrder']);
+});
+
+// Subset semantics: a push only sends what the file defines, so a setting n8n
+// filled in on its own is not drift. Demanding equality here would make every
+// n8c-created workflow read as changed forever, pushing `settings: {}` in a loop.
+test('planDiff: a setting n8n defaulted but the file never set is NOT a change', () => {
+  const r = planDiff(named('W', { settings: {} }), named('W', { settings: { executionOrder: 'v1', binaryMode: 'default' } }));
+  assert.equal(r.status, 'identical');
+});
+
+test('planDiff: a settings key n8n\'s API does not accept is never diffed', () => {
+  const r = planDiff(named('W', { settings: { binaryMode: 'filesystem' } }), named('W', { settings: { binaryMode: 'default' } }));
+  assert.equal(r.status, 'identical', 'binaryMode is read-only — a diff on it could never be applied');
+});
+
+// The [n8c-managed] marker is appended by n8c itself (layout.ts), not written by
+// the operator. Diffing it raw would flip EVERY workflow in a repo to "changed"
+// the first time this comparison shipped, over text nobody edited.
+test('planDiff: the [n8c-managed] description marker alone is not a change', () => {
+  const r = planDiff(named('W', { description: '[n8c-managed]' }), named('W'));
+  assert.equal(r.status, 'identical');
+});
+
+test('planDiff: a real description edit IS a change', () => {
+  const r = planDiff(named('W', { description: 'Handles refunds\n[n8c-managed]' }), named('W', { description: '[n8c-managed]' }));
+  assert.equal(r.status, 'changed');
+  assert.deepEqual(r.fields, ['description']);
+});
+
+test('planDiff: meta is never diffed (n8n rejects it on push)', () => {
+  const r = planDiff(named('W', { meta: { n8cLocalId: 'wf1' } }), named('W', { meta: { instanceId: 'abc' } }));
+  assert.equal(r.status, 'identical');
+});
+
+// staticData is n8n's own runtime scratch space ($getWorkflowStaticData persists
+// into it between executions), not authored config. Diffing it would report a
+// change on every workflow that uses it, every time it ran.
+test('planDiff: staticData drift on the server is not a change', () => {
+  const r = planDiff(named('W', { staticData: { cursor: 1 } }), named('W', { staticData: { cursor: 99 } }));
+  assert.equal(r.status, 'identical');
+});
+
+test('normalizeCredentials: tolerates a missing body and nodes without nodes/credentials', () => {
+  assert.deepEqual(normalizeCredentials(undefined, {}), {});
+  assert.deepEqual(normalizeCredentials({ name: 'W' }, {}), { name: 'W' });
+});
+
+test('normalizeCredentials: a credential ref without an id is dropped, and the credentials key goes with it', () => {
+  const out = normalizeCredentials({ nodes: [
+    { name: 'A', credentials: { openAiApi: { name: 'only a name' } } },
+    { name: 'B', credentials: { openAiApi: null, slackApi: { id: 'L1', name: 'S' } } },
+  ] }, { L1: 'N1' });
+  assert.equal('credentials' in out.nodes[0], false, 'all refs idless → credentials removed');
+  assert.deepEqual(out.nodes[1].credentials, { slackApi: { credentialId: 'N1' } }, 'idless ref skipped, mapped ref kept');
+});
+
+test('planDiff: a new workflow with id-less / name-less nodes names each node by whichever it has, and survives no nodes at all', () => {
+  const r = planDiff({ nodes: [{ name: 'OnlyName' }, { id: 'only-id' }] }, undefined);
+  assert.equal(r.status, 'new');
+  assert.deepEqual(r.nodes.map((n: any) => [n.id, n.name]), [['OnlyName', 'OnlyName'], ['only-id', 'only-id']]);
+  assert.deepEqual(planDiff({}, undefined).nodes, []);
+});
+
+test('planAgainstServer: refuses without an n8n connection', async () => {
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const ctx = { env: 'default', encrypted: false, getDefinitions: async () => ({}) } as any;
+  await assert.rejects(() => planAgainstServer(new MemoryStore(), entityByKind['workflows'], '/nonexistent', ctx), /--plan needs an n8n connection/);
+});
+
+test('planAgainstServer: refuses kinds with no server state to compare', async () => {
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const ctx = { env: 'default', encrypted: false, n8n: {}, getDefinitions: async () => ({}) } as any;
+  await assert.rejects(() => planAgainstServer(new MemoryStore(), entityByKind['prompts'], '/nonexistent', ctx), /--plan is not supported for prompts/);
+});
+
+test('planAgainstServer: a server-only row from a source that reports no serverId carries serverId undefined', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { entityByKind } = await import('../src/entities/index.ts');
+  const root = mkdtempSync(join(tmpdir(), 'n8c-noid-'));
+  try {
+    // a descriptor whose server listing has no serverId (a defensive case: the workflow
+    // descriptor always stringifies the id)
+    const desc = { ...entityByKind['workflows'], pullFromServer: async () => [{ localId: 'ghost', name: 'Ghost', body: {} }] } as any;
+    const ctx = { env: 'default', encrypted: false, n8n: {}, getDefinitions: async () => ({}) } as any;
+    const rows = await planAgainstServer(new MemoryStore(), desc, root, ctx);
+    assert.deepEqual(rows, [{ localId: 'ghost', name: 'Ghost', status: 'removed', checksum: '', archived: false, serverId: undefined }]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

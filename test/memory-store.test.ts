@@ -42,3 +42,14 @@ test('definitions round-trip per env', async () => {
   assert.deepEqual(await s.getDefinitions('staging', 'workflows'), { a: 'n8n-1' });
   assert.deepEqual(await s.getDefinitions('prod', 'workflows'), {});
 });
+
+test('close() resolves — part of the Store contract', async () => {
+  await assert.doesNotReject(() => new MemoryStore().close());
+});
+
+test('markActive and dropVersion on a kind that has no versions are harmless no-ops', async () => {
+  const s = new MemoryStore();
+  await s.withTransaction((session) => s.markActive('prompts', 'v1', session));
+  await s.withTransaction((session) => s.dropVersion('prompts', 'v1', session));
+  assert.deepEqual(await s.listVersions('prompts'), []);
+});

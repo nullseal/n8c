@@ -105,3 +105,40 @@ test('workflow export relinks node credential ids n8n → localId', () => {
   assert.match(src, /"id": "my-uuid"/, 'credential id rewritten to localId');
   assert.doesNotMatch(src, /PROD_ID_123/, 'n8n id removed');
 });
+
+test('mapCredentialsFromWorkflows without an n8n connection maps nothing', async () => {
+  const store = new MemoryStore();
+  const ctx = { env: 'default', encrypted: false, getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+  assert.deepEqual(await mapCredentialsFromWorkflows(store, ctx), { mapped: 0 });
+  assert.deepEqual(await store.getDefinitions('default', 'credentials'), {});
+});
+
+test('mapCredentialsFromWorkflows skips workflows without nodes and credential refs without an id', async () => {
+  const store = new MemoryStore();
+  const wfs = [
+    { id: 'w0', name: 'Empty' },
+    { id: 'w1', name: 'Main', nodes: [
+      { id: 'n1', name: 'A' },
+      { id: 'n2', name: 'B', credentials: { openAiApi: { name: 'no id here' } } },
+      { id: 'n3', name: 'C', credentials: { slackApi: { id: 'S1', name: 'Slack' } } },
+    ] },
+  ];
+  const ctx = { env: 'default', encrypted: false, n8n: { listWorkflows: async () => wfs },
+    getDefinitions: (k: string) => store.getDefinitions('default', k) } as any;
+  assert.deepEqual(await mapCredentialsFromWorkflows(store, ctx), { mapped: 1 });
+  const defs: any = await store.getDefinitions('default', 'credentials');
+  assert.deepEqual(Object.values(defs), [{ id: 'S1', name: 'Slack' }]);
+});
+
+test('mapCredentialsFromWorkflows leaves a mapped credential untouched: updatedAt and the stored name survive a stale node reference', async () => {
+  const store = new MemoryStore();
+  await store.withTransaction((s) => store.putDefinitions('staging', 'credentials',
+    { l1: { id: 'c1', name: 'Real', updatedAt: 'T1' } }, s));
+  const wfs = [{ id: 'w1', name: 'Main', nodes: [
+    { id: 'n1', name: 'A', credentials: { mongoDb: { id: 'c1', name: 'Stale' } } },
+  ] }];
+  const ctx = { env: 'staging', encrypted: false, n8n: { listWorkflows: async () => wfs },
+    getDefinitions: (k: string) => store.getDefinitions('staging', k) } as any;
+  await mapCredentialsFromWorkflows(store, ctx);
+  assert.deepEqual(await store.getDefinitions('staging', 'credentials'), { l1: { id: 'c1', name: 'Real', updatedAt: 'T1' } });
+});

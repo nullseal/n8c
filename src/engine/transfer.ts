@@ -10,21 +10,11 @@ import { decryptCredentialData } from '../entities/credential.ts';
 import { buildDocs } from './apply.ts';
 import { credIndex } from './cred-map.ts';
 import { scanWorkflowSecrets } from './secret-scan.ts';
+import { CREDENTIAL_DATA_EXAMPLE } from './credential-examples.ts';
 
 // Render a credential apply.ts: name/type + a commented hint for the secret.
 // The real `data` value (resolved from process.env at read time) is NEVER written
 // back to a file — that would leak the secret into a committed source file.
-// Example `data` shapes for common n8n credential types. The keys are defined by
-// the TYPE, not by n8c — n8n never returns credential data, so it can't be pulled
-// and we can only suggest. A wrong key is rejected by n8n with a 400.
-const CREDENTIAL_DATA_EXAMPLE: Record<string, string> = {
-  httpHeaderAuth: "{ name: 'Authorization', value: process.env.MY_TOKEN }",
-  httpQueryAuth: "{ name: 'api_key', value: process.env.MY_TOKEN }",
-  httpBasicAuth: '{ user: process.env.MY_USER, password: process.env.MY_PASSWORD }',
-  openAiApi: '{ apiKey: process.env.OPENAI_API_KEY }',
-  mongoDb: '{ connectionString: process.env.MONGO_URI }',
-};
-
 function credentialSource(body: any): string {
   const example = CREDENTIAL_DATA_EXAMPLE[body.type] ?? '{ apiKey: process.env.MY_TOKEN }';
   const hint = [
@@ -94,8 +84,14 @@ export async function exportDocs(desc: EntityDescriptor, root: string, docs: imp
       for (const f of scanWorkflowSecrets(d.body)) warnings.push(`${d.name} (${d.localId}) → ${f}`);
       rmSync(dir, { recursive: true, force: true }); // clean before writing
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: d.name }, null, 2) + '\n');
-      writeFileSync(join(dir, 'apply.ts'), materializeWorkflowSource(d.body, n8nIdToLocal));
+      // The description goes to metadata.json, as in the nodes/ layout: the flat reader
+      // passes it through to the body, and it stays editable there. In apply.ts it would
+      // win over metadata.json, so an edit made in metadata.json would silently do nothing.
+      const { description, ...body } = d.body as any;
+      const meta: any = { name: d.name };
+      if (typeof description === 'string' && description !== '') meta.description = description;
+      writeFileSync(join(dir, 'metadata.json'), JSON.stringify(meta, null, 2) + '\n');
+      writeFileSync(join(dir, 'apply.ts'), materializeWorkflowSource(body, n8nIdToLocal));
       // environment.json: the credentials this workflow uses, by env-neutral
       // localId + name — a committed record of the credentials this workflow uses.
       if (Object.keys(used).length) writeFileSync(join(dir, 'environment.json'), JSON.stringify({ credentials: used }, null, 2) + '\n');

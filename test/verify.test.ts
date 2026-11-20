@@ -223,3 +223,7 @@ test('Fix 1: a failed post-apply refresh degrades serverListed, so the next appl
   const outcome = await verifyBeforeApply(ctx, state);
   assert.equal(outcome.decision, 'stop', 'a degraded post-apply baseline must force a re-plan, never a silent overwrite');
 });
+
+test('touchedFromState tolerates a state without a resources list', () => {
+  assert.deepEqual(touchedFromState({} as any, {}), []);
+});

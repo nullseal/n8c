@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSy
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inlineUnit } from './build/inline.ts';
+import { codeOnly } from './build/code-only.ts';
 
 // True if the (type-stripped) source has real code beyond comments/whitespace.
 function hasRealCode(src: string): boolean {
@@ -30,11 +31,15 @@ async function runApply(file: string): Promise<unknown> {
   return typeof def === 'function' ? await def({}) : def;
 }
 
-// Import a companion file's default export, or undefined if the file is absent.
+// Import a companion file's default export, or undefined if the file is absent or
+// holds only comments, like the stubs `n8c create node` writes. Without a
+// package.json saying "type": "module", Node loads a file with no `export` as
+// CommonJS, and its default export would read as `{}`: an empty connections or
+// credentials object, or a prompt with no key.
 // Like apply.ts, the export may be a static value, a function, or an async
 // function — a function is called with a context and awaited.
 async function optionalImport(file: string): Promise<unknown> {
-  if (!existsSync(file)) return undefined;
+  if (!existsSync(file) || !hasRealCode(readFileSync(file, 'utf8'))) return undefined;
   const mod = await import(pathToFileUrl(file));
   const def = mod.default;
   return typeof def === 'function' ? await def({}) : def;
@@ -50,6 +55,14 @@ function pathToFileUrl(p: string): string {
 
 export interface EntityPrompt { localId: string; name: string; body: unknown; }
 export interface ReadEntityResult { metadata: any; body: unknown; prompts: EntityPrompt[]; }
+
+// Stamped into every workflow description n8c writes, so a workflow's origin is
+// visible in the n8n UI. It is n8c's own text, never the operator's — comparisons
+// strip it (see stripManagedMarker) so the marker alone never reads as drift.
+export const MANAGED_MARKER = '[n8c-managed]';
+export function stripManagedMarker(description: unknown): string {
+  return typeof description === 'string' ? description.split(MANAGED_MARKER).join('').trim() : '';
+}
 
 export async function readEntity(root: string, kind: string, localId: string, codeByNode: Record<string, string> = {}): Promise<ReadEntityResult> {
   const dir = entityDir(root, kind, localId);
@@ -72,7 +85,7 @@ export async function readEntity(root: string, kind: string, localId: string, co
       const codeFile = join(nodesDir, nid, 'code.ts');
       if (existsSync(codeFile)) {
         const src = readFileSync(codeFile, 'utf8');
-        if (/(^|\n)\s*export\b/.test(src)) {
+        if (/(^|\n)\s*export\b/.test(codeOnly(src))) {
           const val = await optionalImport(codeFile); // imports default, calls if fn
           if (typeof val === 'string' && hasRealCode(val)) parameters.jsCode = val;
         } else {
@@ -109,14 +122,20 @@ export async function readEntity(root: string, kind: string, localId: string, co
     }
     const { connections: _c, ...rest } = metadata;
     const desc = (metadata.description ?? '').trim();
-    const description = desc.includes('[n8c-managed]') ? desc : (desc ? desc + '\n[n8c-managed]' : '[n8c-managed]');
+    const description = desc.includes(MANAGED_MARKER) ? desc : (desc ? desc + '\n' + MANAGED_MARKER : MANAGED_MARKER);
     return { metadata, body: { ...rest, nodes, connections, description }, prompts };
   }
   const body = await runApply(join(dir, 'apply.ts'));
-  // Workflows with no nodes/ dir still get metadata.description passed through
-  // to body.description (the n8n workflow field), matching the node branch.
-  if (kind === 'workflows' && body && typeof body === 'object' && metadata.description !== undefined && (body as any).description === undefined) {
-    (body as any).description = metadata.description;
+  if (kind === 'workflows' && body && typeof body === 'object') {
+    const b = body as any;
+    // Workflows with no nodes/ dir still get metadata.description passed through
+    // to body.description (the n8n workflow field), matching the node branch.
+    if (metadata.description !== undefined && b.description === undefined) b.description = metadata.description;
+    // A src/<unit> replaces its target node's code here too, matching the node
+    // branch: `pull` and `restore` write this layout, and unit edits must keep deploying.
+    if (Array.isArray(b.nodes)) {
+      for (const n of b.nodes) if (codeByNode[n.id] !== undefined) n.parameters = { ...n.parameters, jsCode: codeByNode[n.id] };
+    }
   }
   return { metadata, body, prompts: [] };
 }

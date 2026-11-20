@@ -21,3 +21,8 @@ test('checksum ignores volatile keys deeply', () => {
 test('checksum differs when meaningful content differs', () => {
   assert.notEqual(checksum({ name: 'x' }), checksum({ name: 'y' }));
 });
+
+test('canonicalize renders undefined as null', () => {
+  assert.equal(canonicalize(undefined), 'null');
+  assert.equal(canonicalize({ a: undefined }), '{"a":null}');
+});
