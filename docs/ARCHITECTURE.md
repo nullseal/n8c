@@ -92,7 +92,7 @@ Credentials and prompts are planned differently (diagrams 5 and 12).
 ```mermaid
 flowchart TD
     PAS["planAgainstServer"] --> DES["desired = buildDocs(workflows,<br/>codeByNode): src/unit code<br/>inlined as apply pushes it"]
-    PAS --> SRV["server = workflow.pullFromServer<br/>listWorkflows. localId =<br/>meta.n8cLocalId, else the env<br/>mapping, else a new UUID"]
+    PAS --> SRV["server = workflow.pullFromServer<br/>listWorkflows with descriptions<br/>(diagram 15), a description kept<br/>only when it is non-empty text.<br/>localId = meta.n8cLocalId,<br/>else the env mapping,<br/>else a new UUID"]
     PAS --> CM["credMap = credIdMap(<br/>credential definitions)"]
     DES --> HAS{"server body with<br/>the same localId?"}
     SRV --> HAS
@@ -130,6 +130,10 @@ flowchart TD
 - `codeByNode` (the built `src/{unit}` code, diagram 11) is a required argument of `planAgainstServer`,
   so the desired body is the one apply pushes: a unit-only edit plans as `changed`, and a deployed unit
   plans as identical.
+- n8n's workflow list has no `description`; only `GET /workflows/{id}` has it. So the server side asks
+  `listWorkflows` for descriptions, one extra GET per workflow, or a description edit would plan forever and
+  removing one would never plan. n8n reports "none" as `null`, and n8n 2.16+ rejects `null` in a push, so
+  only non-empty text is kept.
 - `plan` prints the reported fields, then the changed node names (`renderChangedParts` in `cli.ts`).
 
 **Source:** `src/engine/plan.ts` (`planAgainstServer`, `planDiff`, `normalizeCredentials`, `diffPushedFields`), `src/engine/apply.ts` (`diffNodes`, `buildDocs`), `src/entities/workflow.ts` (`pullFromServer`, `WRITABLE`, `WRITABLE_SETTINGS`), `src/engine/cred-map.ts` (`credIdMap`), `src/layout.ts` (`stripManagedMarker`), `src/checksum.ts`, `src/engine/build.ts` (`buildSources`), `src/engine/state.ts` (`computePlan`, workflows block).
@@ -474,7 +478,7 @@ exploded one (a `nodes/` folder) the body is assembled from `metadata.json` and 
 
 ```mermaid
 flowchart TD
-    W1["pull, restore: exportDocs writes flat:<br/>metadata.json with the name +<br/>apply.ts from materializeWorkflowSource"]
+    W1["pull, restore: exportDocs writes flat:<br/>metadata.json with the name and<br/>any description + apply.ts with the<br/>rest, from materializeWorkflowSource"]
     W2["n8c create workflow: flat scaffold<br/>n8c create node: adds nodes/{uuid}/<br/>with metadata.json, apply.ts and<br/>comment-only code.ts, connection.ts"]
     W1 --> RE
     W2 --> RE
@@ -482,8 +486,11 @@ flowchart TD
     Q -->|"no: flat"| FA["import the apply.ts default<br/>export: a value, or a function<br/>called and awaited"]
     FA --> FDESC{"body has no description<br/>but metadata.json has one?"}
     FDESC -->|"yes"| FCOPY["copy it into the body"]
-    FDESC -->|"no"| FBODY["body = what apply.ts returns<br/>metadata.json supplies<br/>the display name"]
-    FCOPY --> FBODY
+    FDESC -->|"no"| FUNIT
+    FCOPY --> FUNIT{"a node whose id has<br/>codeByNode built code?"}
+    FUNIT -->|"yes"| FCODE["its parameters.jsCode =<br/>the built code, as in<br/>the exploded layout"]
+    FUNIT -->|"no"| FBODY["body = what apply.ts returns<br/>metadata.json supplies<br/>the display name"]
+    FCODE --> FBODY
     Q -->|"yes: exploded"| EACH["each nodes/{nodeId}/ folder<br/>metadata.json: name, type,<br/>typeVersion, position, credentials<br/>apply.ts: parameters<br/>code.ts: jsCode (diagram 11)<br/>credentials.ts: TYPE to localId<br/>prompt.ts: for validateAll (diagram 12)<br/>connection.ts: outgoing connections<br/>a file of only comments<br/>counts as absent"]
     EACH --> NODEOBJ["node: id = nodeId,<br/>notes = n8c@nodeId"]
     EACH --> CONN["connections: metadata.json ones<br/>keyed by nodeId, connection.ts<br/>wins for its node, target<br/>nodeIds resolved to names"]
@@ -498,6 +505,12 @@ flowchart TD
     NAMECHK -->|"no"| OUT["workflow body<br/>for buildDocs"]
 ```
 
+- `exportDocs` writes a workflow's description to `metadata.json`, never `apply.ts`: in the flat layout a body
+  description wins over the `metadata.json` one, so an edit there would otherwise do nothing. A description
+  deleted from a flat workflow's files is left as it is on n8n, since `diffPushedFields` skips keys the file
+  does not set; `""` clears it.
+- `codeByNode` (diagram 11) replaces a target node's `jsCode` in both layouts. `pull` and `restore` always write
+  the flat one, so a unit must still apply there, or its edits would stop deploying after either.
 - In the exploded layout, a `credentials.ts` replaces the node's `metadata.json` credentials.
 - A `connection.ts`, `credentials.ts` or `prompt.ts` that holds only comments counts as absent, so the
   stubs `n8c create node` writes change nothing until filled in. Outside a `"type": "module"` package,
@@ -534,7 +547,8 @@ flowchart TD
     H --> D1
     subgraph RESTORE["n8c restore REF"]
         R1["resolveGenerationRef: trim,<br/>drop a trailing colon, exact<br/>versionId, else a unique hash<br/>prefix (else an error)"] --> R2["each kind holding<br/>that versionId: exportVersion<br/>= getVersion + exportDocs<br/>(files rewritten)"]
-        R2 --> R3{"--apply?"}
+        R2 --> RU["workflows: unitOverrides lists each<br/>restored node whose code differs<br/>from its src/ unit build, which<br/>plan and apply deploy instead,<br/>printed as a notice"]
+        RU --> R3{"--apply?"}
         R3 -->|"no"| R4["files only: plan and<br/>apply next (active<br/>generation unchanged)"]
         R3 -->|"yes"| R5["computePlan (no --destroy),<br/>writeState, applyFromState<br/>(message restore REF),<br/>refreshedServerFacts, writeState<br/>no drift gate, a change<br/>makes a new generation"]
     end
@@ -545,7 +559,13 @@ flowchart TD
     end
 ```
 
-**Source:** `src/engine/apply-state.ts` (pass 2), `src/engine/pull.ts` (`isKindChanged`, `commitPullGeneration`), `src/version.ts` (`nextVersionId`), `src/cli.ts` (`readGenerations`, `groupByGeneration`, `resolveGenerationRef`, `renderGeneration`; list, pull, restore and drop handlers), `src/engine/list.ts` (`listEntity`), `src/engine/transfer.ts` (`exportVersion`), `src/store/*` (`createSnapshot`, `markActive`, `listVersions`, `getVersion`, `dropVersion`).
+- A generation holds n8c/ content only. `src/{unit}` sources live in the repo and are no part of one, so
+  `restore` cannot roll back a unit's code: plan and apply inline the unit's current build over the restored
+  copy (diagram 7). `restore` names each node where the two differ, and says to restore the unit's source
+  too (e.g. with git). When a unit does not build, the notice is skipped and the files are still restored;
+  `plan` reports the build error.
+
+**Source:** `src/engine/apply-state.ts` (pass 2), `src/engine/pull.ts` (`isKindChanged`, `commitPullGeneration`), `src/version.ts` (`nextVersionId`), `src/cli.ts` (`readGenerations`, `groupByGeneration`, `resolveGenerationRef`, `renderGeneration`, `printUnitOverrides`; list, pull, restore and drop handlers), `src/engine/build.ts` (`buildSources`, `unitOverrides`), `src/engine/list.ts` (`listEntity`), `src/engine/transfer.ts` (`exportVersion`), `src/store/*` (`createSnapshot`, `markActive`, `listVersions`, `getVersion`, `dropVersion`).
 
 ## 9. Drift gate
 
@@ -695,14 +715,14 @@ flowchart TD
     JOIN -->|"returned to buildSources"| BOUT["dist/{unit}.js written,<br/>codeByNode[target] = the JS"]
     JOIN -->|"returned to readEntity,<br/>real code only"| PARAM["node parameters.jsCode"]
     MOD -->|"real code only"| PARAM
-    BOUT -->|"readEntity:<br/>codeByNode[nodeId] wins"| PARAM
+    BOUT -->|"readEntity, either layout:<br/>codeByNode[nodeId] wins"| PARAM
 ```
 
 - `codeByNode` reaches `readEntity` (through `buildDocs`) from three places: `computePlan` passes it to
   `planAgainstServer`, so the workflow diff sees a change that lives only in a `src/{unit}`;
   `desiredBundleChecksum` uses it for the staleness check; `applyFromState` uses it for the push. Each
-  calls `buildSources` itself, so all three see the same inlined code. Only exploded workflows apply
-  it, and `validateAll` does not see it.
+  calls `buildSources` itself, so all three see the same inlined code. Both workflow layouts apply it
+  (diagram 7), including the flat one `pull` and `restore` write; `validateAll` does not see it.
 - "Real code" means something other than comments and whitespace remains.
 - Inside `inlineUnit`, import parsing, the import and export cuts and the leftover check skip comments,
   string and regex literals and template-literal text: `codeOnly` blanks those to spaces (keeping every
@@ -711,7 +731,7 @@ flowchart TD
   expressions count as code. Whether a `/` starts a regex literal is decided by the token before it;
   the rule and the cases it misreads are commented in `src/build/code-only.ts`. A misread can hide a later real import/export from that view, so the joined result is also parsed once as a function body, which rejects one the scanner missed.
 
-**Source:** `src/engine/build.ts` (`buildSources`), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `cut`, `resolveDep`, `transformHelper`, `transformEntry`), `src/build/code-only.ts` (`codeOnly`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
+**Source:** `src/engine/build.ts` (`buildSources`), `src/layout.ts` (`readEntity`, both layouts), `src/build/inline.ts` (`inlineUnit`, `parseImports`, `cut`, `resolveDep`, `transformHelper`, `transformEntry`), `src/build/code-only.ts` (`codeOnly`), `src/layout.ts` (`readEntity` code.ts branch, `hasRealCode`), `src/engine/state.ts` (`computePlan`, `desiredBundleChecksum`), `src/engine/apply-state.ts` (`applyFromState`), `src/engine/plan.ts` (`planAgainstServer`).
 
 ## 12. Prompts
 
@@ -761,7 +781,7 @@ flowchart TD
     ASK -->|"anything but<br/>y or yes"| ABORT["pull aborted,<br/>nothing changed"]
     ASK -->|"y or yes"| W
     subgraph P1["Phase 1: fetch every kind, no version written yet"]
-        W["workflows: pullEntity<br/>workflow.pullFromServer<br/>(listWorkflows)<br/>putDefinitions + putLive"]
+        W["workflows: pullEntity<br/>workflow.pullFromServer<br/>(listWorkflows with descriptions,<br/>one GET per workflow, diagram 15)<br/>putDefinitions + putLive"]
         PR["prompts: pullPromptsFromNodes<br/>putLive (diagram 12)"]
         PC["prompt-contents, mongodb only:<br/>pullEntity, no server:<br/>getLive, then putLive"]
         CR["credentials: pullEntity<br/>credential.pullFromServer<br/>(listCredentials)<br/>putDefinitions + putLive"]
@@ -778,13 +798,15 @@ flowchart TD
     TYPES --> EACH["exportDocs for each kind<br/>that has docs (a failure is<br/>reported, other kinds go on)"]
     EACH --> PRUNE["remove entity folders<br/>whose localId is not<br/>in the pulled set"]
     PRUNE --> KIND{"kind"}
-    KIND -->|"workflows"| WFX["relink node credential ids<br/>to localIds (unmapped:<br/>export fails),<br/>scanWorkflowSecrets warnings,<br/>metadata.json + apply.ts<br/>(materializeWorkflowSource)<br/>+ environment.json"]
+    KIND -->|"workflows"| WFX["relink node credential ids<br/>to localIds (unmapped:<br/>export fails),<br/>scanWorkflowSecrets warnings,<br/>metadata.json (name, description)<br/>+ apply.ts (the rest,<br/>materializeWorkflowSource)<br/>+ environment.json"]
     KIND -->|"credentials"| CFX["metadata.json + apply.ts<br/>with name, type and a<br/>commented data hint"]
     KIND -->|"prompts,<br/>prompt-contents"| PFX["writeEntity:<br/>metadata.json + apply.ts"]
 ```
 
 - A kind whose pulled set is empty is not exported, so its old folders are not pruned.
 - Prompt-contents is skipped on sqlite (diagram 12).
+- Workflows always export to the flat layout, even when their folder was exploded before; a `src/{unit}`
+  still applies to them (diagram 7).
 
 **Source:** `src/cli.ts` (pull handler, `dirHasEntities`, `writeTypesFile`, `printSecretWarnings`), `src/engine/pull.ts` (`pullEntity`, `isKindChanged`, `commitPullGeneration`), `src/engine/pull-prompts.ts`, `src/engine/environment.ts` (`mapCredentialsFromWorkflows`), `src/engine/transfer.ts` (`exportDocs`, `credentialSource`), `src/engine/credential-examples.ts` (`CREDENTIAL_DATA_EXAMPLE`, the data hint), `src/engine/materialize.ts` (`materializeWorkflowSource`), `src/engine/secret-scan.ts` (`scanWorkflowSecrets`), `src/layout.ts` (`writeEntity`), `src/engine/types-gen.ts`.
 
@@ -837,10 +859,15 @@ flowchart TD
     CRE -->|"version 2"| V2["N8nClientV2"]
     CRE -->|"version 3"| V3["N8nClientV3"]
     V3 -->|"extends"| V2
-    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, updateWorkflow,<br/>transferWorkflow, transferCredential,<br/>deleteWorkflow, archiveWorkflow,<br/>other credential methods"]
-    V2 --> CW2["createWorkflow and createCredential:<br/>POST, body unchanged, then, when<br/>n8nProjectId is set and n8n<br/>returned an id: PUT /{kind}/{id}/transfer<br/>(workflow:move / credential:move)"]
+    V2 -->|"extends"| BASE["N8nClientBase:<br/>req (error.status, bodies per diagram 14,<br/>a 204 reply resolves to undefined),<br/>reqAll cursor pagination,<br/>listWorkflows, getWorkflow, updateWorkflow,<br/>transferWorkflow, transferCredential,<br/>deleteWorkflow, archiveWorkflow,<br/>other credential methods"]
+    BASE --> LD{"listWorkflows:<br/>descriptions asked for?<br/>(pull and plan do,<br/>the drift baseline does not)"}
+    LD -->|"no"| LDR(["the listed rows"])
+    LD -->|"yes"| LDG["each row without a description key:<br/>getWorkflow, 8 at a time,<br/>description copied in"]
+    LDG -->|"a GET 404s:<br/>deleted since the list"| LDK(["that row kept as listed"])
+    LDG -->|"any other GET error"| LDE(["rejects"])
+    V2 --> CW2["createWorkflow and createCredential:<br/>POST (a workflow through sendWorkflow),<br/>then, when n8nProjectId is set and<br/>n8n returned an id: PUT /{kind}/{id}/transfer<br/>(workflow:move / credential:move)"]
     CW2 --> MV{"the move"}
-    MV -->|"ok, or 400: the project<br/>already owns it"| MVOK(["returns the created item"])
+    MV -->|"ok, or 400: the project<br/>already owns it (credentials:<br/>already owning it, a workflow<br/>from 2.3: the same destination<br/>it already belongs to)"| MVOK(["returns the created item"])
     MV -->|"any other error"| MVDEL["DELETE the new item"]
     MVDEL -->|"ok"| MVERR(["throws: kind, id, project, missing scope,<br/>status and cause = the move error;<br/>no mapping recorded, a retry creates one copy"])
     MVDEL -->|"fails too"| MVORP(["throws the same, plus: item left in the<br/>personal project, remove it by hand"])
@@ -849,12 +876,23 @@ flowchart TD
     V3 --> AW3["activateWorkflow: POST publish<br/>deactivateWorkflow: POST unpublish<br/>(both overridden)"]
     V2 --> LW["listWorkflows, V3 inherits it:<br/>when a row has activeVersionId,<br/>active = activeVersionId is not null"]
     V2 --> ARC["archiveWorkflow, V3 inherits it:<br/>POST archive"]
-    ARC -->|"ok, or any error<br/>other than 404"| ARCR(["resolves, or rethrows<br/>the same error"])
-    ARC -->|"404"| ARCG["GET /workflows/{id}"]
-    ARCG -->|"404"| ARCO(["rethrows the original archive<br/>404: apply reads it as already deleted"])
+    ARC -->|"ok, or any error<br/>other than 404 or 405"| ARCR(["resolves, or rethrows<br/>the same error"])
+    ARC -->|"405 (n8n 2.0 to 2.14),<br/>or 404"| ARCG["getWorkflow"]
+    ARCG -->|"404"| ARCO(["rethrows a 404 (the archive's own,<br/>else the GET's): apply reads<br/>it as already deleted"])
     ARCG -->|"other error"| ARCE(["rethrows the GET error,<br/>so apply fails the row"])
     ARCG -->|"200: no archive endpoint,<br/>n8n before 2.15"| ARCD(["deleteWorkflow: permanent DELETE,<br/>then one warning line"])
-    V2 --> UW["updateWorkflow, V3 inherits it:<br/>PUT via base"]
+    V2 --> UW["updateWorkflow, V3 inherits it:<br/>PUT via base, through sendWorkflow"]
+    CW2 -->|"the workflow POST"| SW{"sendWorkflow: body has<br/>a description key?"}
+    UW -->|"the PUT"| SW
+    SW -->|"no"| SEND["send as is"]
+    SW -->|"yes, and this client saw<br/>it refused before"| SENDN["send without it"]
+    SW -->|"yes"| SENDD["send with it"]
+    SENDD -->|"400 request/body must NOT<br/>have additional properties<br/>(n8n 2.0 to 2.15)"| SENDN
+    SENDN -->|"ok"| SWW["remember: later calls<br/>leave it out. Warn, naming<br/>the workflow, unless it was<br/>only the n8c-managed marker"]
+    SEND --> SWOUT(["n8n's answer goes back to the caller:<br/>create goes on to the move,<br/>update to its response check"])
+    SENDD -->|"any other answer"| SWOUT
+    SENDN -->|"fails too: some<br/>other key was refused"| SWOUT
+    SWW --> SWOUT
     UW --> R{"response"}
     R -->|"ok"| DONE(["updated"])
     R -->|"403 whose body names<br/>workflow:activate or<br/>workflow:publish"| DRAFT(["throws: n8n saved the new version<br/>as a DRAFT, with the recovery steps,<br/>status 403, cause = the original error"])
@@ -868,18 +906,31 @@ flowchart TD
 - Other features need a later 2.x release than the workflow calls do: credential updates (`PATCH /credentials/{id}`)
   from 2.4.0 and credential listing (`GET /credentials`) from 2.8.0. `projectId` in a credential create body is honored only
   from 2.18.0 (before that n8n puts the credential in the API key's personal project), which is why V2 creates then moves.
-- `POST /workflows/{id}/archive` exists only from 2.15.0; before that the route is missing and answers 404 although
-  the workflow exists. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after a 404: if that also 404s the
-  workflow is gone and the original error is rethrown; if it succeeds, the workflow is deleted permanently (on those
-  releases `DELETE` is a forced delete) and a warning line is printed; any other GET error is rethrown. A failing
-  fallback `DELETE` is rethrown wrapped (with `cause`) and never as a 404, because apply reads a 404 as "already deleted"
-  and the GET just proved the workflow exists.
+- `POST /workflows/{id}/archive` exists only from 2.15.0. Before that it answers 405 "POST method not allowed" (live
+  at 2.14.2: the path matches `GET /workflows/{id}/{versionId}`) whether or not the workflow exists; a 404 is treated
+  the same way. `N8nClientV2.archiveWorkflow` therefore GETs the workflow after either: if that 404s the workflow is
+  gone and a 404 is rethrown (the archive's own when it was one, else the GET's); if it succeeds, the workflow is
+  deleted permanently (on those releases `DELETE` is a forced delete) and a warning line is printed; any other GET
+  error is rethrown. A failing fallback `DELETE` is rethrown wrapped (with `cause`) and never as a 404, because apply
+  reads a 404 as "already deleted" and the GET just proved the workflow exists.
+- n8n 2.0 to 2.15 have no workflow description: their schema refuses the key in any form (text, `""` or `null`) with
+  400 "request/body must NOT have additional properties" (live at 2.14.2). n8c sends one for every workflow built
+  from a `nodes/` folder (the `[n8c-managed]` marker), so `sendWorkflow` (V2's create, and the update V3 inherits)
+  sends such a body again without it and has the client leave it out of every later call. Dropping only the marker
+  is silent; a description with real text gets a warning naming the workflow, since `plan` keeps listing it as a
+  change there. If the retry fails as well, its error propagates. n8n 3.x and 2.33+, which `N8nClientV3`'s create
+  targets, all accept a description.
+- n8n's workflow list never includes `description` (live at 2.14.2, 2.48.6 and 3.3.0); `GET /workflows/{id}` does,
+  as `null` when there is none. `listWorkflows({ descriptions: true })` completes the rows from that GET, 8 at a
+  time; `readServerFacts` needs only `updatedAt` and `active`, so it lists without them.
 - A failed move rolls the create back (`createThenMove`): the new item is deleted, and the error names the kind, the
   created id and the project, keeping the transfer's `status` and `cause`. On a 403 it says the key most likely lacks
   the scope (`workflow:move` / `credential:move`); on any other status (say 400 for a project that does not exist)
   it says to check that the project exists and the key can access it. Rolling back keeps a retried `apply` from creating a second copy; recording the mapping
   instead would make the retry update an item stuck in the wrong project. If the delete fails as well, the error says
-  the item was left in the key's personal project and must be removed by hand. A 400 "already owning it" is success.
+  the item was left in the key's personal project and must be removed by hand. A 400 saying the item is already in
+  the project is success: "already owning it" for a credential, and from n8n 2.3 "the same destination it already
+  belongs to" for a workflow (live at 2.48.6).
 - n8n answers the transfer with 204 and no body, so `req` returns `undefined` for a 204 instead of parsing it.
 - A PUT on a published workflow makes n8n re-publish it. When n8n refuses that publish with a 403 whose body names
   `workflow:activate` or `workflow:publish`, it still keeps the new version as a draft, so the error says that and
@@ -890,4 +941,4 @@ flowchart TD
   example a key without `workflow:update`, where nothing was saved) passes through unchanged.
 - `listWorkflows` leaves a row untouched when it carries no `activeVersionId` field.
 
-**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `transferWorkflow`, `transferCredential`), `src/n8n/v2.ts` (`N8nClientV2`, `createThenMove`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).
+**Source:** `src/n8n/index.ts` (`resolveN8nVersion`, `createN8nClient`), `src/n8n/base.ts` (`N8nClientBase`: `req`, `listWorkflows`, `fillDescriptions`, `getWorkflow`, `transferWorkflow`, `transferCredential`), `src/n8n/v2.ts` (`N8nClientV2`, `createThenMove`, `sendWorkflow`, `archiveWorkflow`), `src/n8n/v3.ts` (`N8nClientV3`), `src/context.ts` (`buildContext`), `src/engine/init.ts` (`DEFAULT_CONFIG`).

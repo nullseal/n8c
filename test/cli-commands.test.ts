@@ -29,10 +29,15 @@ interface FakeOpts {
   // 500 on calls matching a "METHOD /path" prefix, or a predicate (given the call
   // and every call so far, the current one included).
   fail?: FailRule[];
+  // Behave like n8n 2.0-2.15, where a workflow body may not carry `description` at all.
+  noDescription?: boolean;
 }
 
 // Minimal stateful fake n8n on 127.0.0.1: records every call, serves
 // workflows/credentials; PUT /workflows/:id replaces the stored workflow.
+// Where n8c depends on a detail, the fake answers like real n8n does (checked live
+// at 2.14.2, 2.48.6 and 3.3.0): the workflow list has no `description`, GET
+// /workflows/{id} has it (null when unset), and a body's description must be a string.
 export function fakeN8n(opts: FakeOpts = {}) {
   const calls: Call[] = [];
   const workflows = opts.workflows ?? [];
@@ -48,7 +53,18 @@ export function fakeN8n(opts: FakeOpts = {}) {
       calls.push(call);
       res.setHeader('content-type', 'application/json');
       if (fail.some((f) => (typeof f === 'string' ? `${method} ${url}`.startsWith(f) : f(call, calls)))) { res.statusCode = 500; return res.end('{"message":"boom"}'); }
-      if (method === 'GET' && url.startsWith('/api/v1/workflows')) return res.end(JSON.stringify({ data: workflows, nextCursor: null }));
+      // A workflow body's description: n8n 2.0-2.15 accept none at all; 2.16+ need a string.
+      if ((method === 'POST' || method === 'PUT') && /^\/api\/v1\/workflows(\/[^/]+)?$/.test(url) && body && 'description' in body
+        && (opts.noDescription || typeof body.description !== 'string')) {
+        res.statusCode = 400;
+        return res.end(opts.noDescription ? '{"message":"request/body must NOT have additional properties"}' : '{"message":"request/body/description Expected string, received null"}');
+      }
+      if (method === 'GET' && /^\/api\/v1\/workflows\/[^/?]+$/.test(url)) {
+        const w = workflows.find((x) => x.id === url.split('/').pop());
+        if (!w) { res.statusCode = 404; return res.end('{"message":"Not Found"}'); }
+        return res.end(JSON.stringify({ ...w, description: w.description ?? null }));
+      }
+      if (method === 'GET' && url.startsWith('/api/v1/workflows')) return res.end(JSON.stringify({ data: workflows.map(({ description: _d, ...w }) => w), nextCursor: null }));
       if (method === 'GET' && url.startsWith('/api/v1/credentials/schema/')) {
         const type = decodeURIComponent(url.split('/').pop()!);
         return res.end(JSON.stringify(opts.schemas?.[type] ?? { properties: {} }));
@@ -280,6 +296,52 @@ test('plan warns when only the server baseline snapshot failed', async (t) => {
   assert.match(cap.text(), /no server baseline recorded for this plan/);
   assert.match(cap.text(), /re-run `n8c plan` to record one/);
   assert.doesNotMatch(cap.text(), /could not list credentials/);
+});
+
+// n8n's workflow list has no `description` (only GET /workflows/{id} does), so these
+// two failed live at 2.48.6 and 3.3.0 when plan and pull read the list alone.
+test('pull writes a description from the n8n UI to metadata.json, and plan right after is clean', async (t) => {
+  const { cap } = await seedPulled(t, { workflows: [{ ...WF('W1', 'Main'), description: 'Described in the n8n UI' }] });
+  assert.deepEqual(JSON.parse(readFileSync(wfMetaPath(), 'utf8')), { name: 'Main', description: 'Described in the n8n UI' });
+  assert.doesNotMatch(readFileSync(join(wfDir(), 'apply.ts'), 'utf8'), /description/, 'one place to edit it: metadata.json');
+  cap.out.length = 0;
+  await runCli(['plan']);
+  assert.match(cap.text(), /Plan: 0 to create, 0 to update, 0 to destroy\./);
+});
+
+test('a description edited in a pulled workflow\'s metadata.json plans and deploys once, then plan is clean', async (t) => {
+  const { fake, cap } = await seedPulled(t, { workflows: [{ ...WF('W1', 'Main'), description: 'Described in the n8n UI' }] });
+  writeFileSync(wfMetaPath(), JSON.stringify({ name: 'Main', description: 'Handles refunds' }, null, 2) + '\n');
+  cap.out.length = 0;
+  await runCli(['plan']);
+  assert.match(cap.text(), /~ workflow {2}\[[^\]]+\] {2}Main {2}\(description\)/);
+  fake.calls.length = 0;
+  await runCli(['apply']);
+  assert.equal(fake.calls.find((c) => c.method === 'PUT' && c.url === '/api/v1/workflows/W1')?.body.description, 'Handles refunds');
+  cap.out.length = 0;
+  await runCli(['plan']);
+  assert.match(cap.text(), /Plan: 0 to create, 0 to update, 0 to destroy\./);
+});
+
+// n8n 2.0-2.15 refuse `description` in a workflow body (live at 2.14.2): before the
+// fix, every workflow n8c built from a nodes/ folder failed there, marker and all.
+test('n8n 2.0-2.15: apply deploys a workflow without its description and says so', async (t) => {
+  const fake = await withFake({ workflows: [], noDescription: true });
+  const cap = capture(t);
+  await runCli(['init']);
+  const cfg = join(cwd, 'n8c.config.json');
+  writeFileSync(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, 'utf8')), n8nVersion: '2' }));
+  const dir = join(cwd, 'n8c', 'workflows', 'local1');
+  mkdirSync(join(dir, 'nodes', 'n1'), { recursive: true });
+  writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: 'Greeter', description: 'says hi' }));
+  writeFileSync(join(dir, 'nodes', 'n1', 'metadata.json'), JSON.stringify({ name: 'Start', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [0, 0] }));
+  writeFileSync(join(dir, 'nodes', 'n1', 'apply.ts'), 'export default {};\n');
+  await runCli(['plan']);
+  await runCli(['apply']);
+  assert.match(cap.text(), /Apply complete: 1 applied, 0 failed\./);
+  assert.match(cap.errText(), /workflow "Greeter" was saved without its description: this n8n refuses workflow descriptions/);
+  const posts = fake.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/workflows');
+  assert.deepEqual(posts.map((c) => c.body.description), ['says hi\n[n8c-managed]', undefined]);
 });
 
 test('apply pushes the plan and prints applied', async (t) => {
@@ -770,8 +832,8 @@ test('create node prompts for the workflowId on a TTY', async (t) => {
 // ---------------------------------------------------------------- restore / drop
 
 // Two generations: pull (gen A: "Main"), then rename + plan + apply (gen B: "Renamed").
-async function twoGenerations(t: any) {
-  const { fake, cap } = await seedPulled(t);
+async function twoGenerations(t: any, opts: FakeOpts = {}) {
+  const { fake, cap } = await seedPulled(t, opts);
   renameWf('Renamed');
   await runCli(['plan']);
   await runCli(['apply', '-m', 'second']);
@@ -792,6 +854,7 @@ test('restore <generation> restores live docs', async (t) => {
   assert.match(cap.text(), /restored workflow → files\./);
   assert.match(cap.text(), new RegExp(`\\(${first.replace(/[.+]/g, '\\$&')}\\) restored\\.`));
   assert.match(cap.text(), /Run `n8c plan` to preview/);
+  assert.doesNotMatch(cap.text(), /does not roll back/, 'no unit, no notice');
 });
 
 test('restore --apply rolls back and deploys in one shot', async (t) => {
@@ -804,6 +867,39 @@ test('restore --apply rolls back and deploys in one shot', async (t) => {
   assert.equal(put!.body.name, 'Main');
   assert.match(cap.text(), /Apply complete: 1 applied, 0 failed\./);
   assert.equal(JSON.parse(readFileSync(wfMetaPath(), 'utf8')).name, 'Main');
+});
+
+// restore rolls back n8c/, not src/: a node a src/<unit> feeds gets the unit's
+// current code from plan/apply, whatever the restored generation held.
+test('restore names the restored nodes whose code a src/<unit> replaces', async (t) => {
+  const shape = { id: 'n2', name: 'Shape', type: 'n8n-nodes-base.code', typeVersion: 2, position: [200, 0], parameters: { jsCode: 'return [] // generation 1' } };
+  const { cap, first } = await twoGenerations(t, { workflows: [{ ...WF('W1', 'Main'), nodes: [...WF('W1', 'Main').nodes, shape] }] });
+  const unit = (name: string, target: string) => {
+    mkdirSync(join(cwd, 'src', name), { recursive: true });
+    writeFileSync(join(cwd, 'src', name, 'metadata.json'), JSON.stringify({ target }));
+    writeFileSync(join(cwd, 'src', name, 'code.ts'), `return [] // src/${name}\n`);
+  };
+  unit('start', 'n1');
+  unit('shape', 'n2');
+  cap.out.length = 0;
+  await runCli(['restore', first]);
+  assert.match(cap.text(), /! 2 restored nodes take their code from a src\/ unit, which restore does not roll back — n8n gets the unit's current code:\n {4}Main → Start\n {4}Main → Shape\n {2}Restore the unit's source too \(e\.g\. with git\) to roll that code back, then plan and apply\./);
+  rmSync(join(cwd, 'src', 'start'), { recursive: true });
+  cap.out.length = 0;
+  await runCli(['restore', first]);
+  assert.match(cap.text(), /! 1 restored node takes its code from a src\/ unit, which restore does not roll back — n8n gets the unit's current code:\n {4}Main → Shape\n {2}Restore/);
+});
+
+test('restore still restores the files when a src/<unit> does not build (plan reports that)', async (t) => {
+  const { cap, first } = await twoGenerations(t);
+  mkdirSync(join(cwd, 'src', 'broken'), { recursive: true });
+  writeFileSync(join(cwd, 'src', 'broken', 'metadata.json'), JSON.stringify({}));
+  writeFileSync(join(cwd, 'src', 'broken', 'code.ts'), 'return [];\n');
+  cap.out.length = 0;
+  await runCli(['restore', first]);
+  assert.equal(JSON.parse(readFileSync(wfMetaPath(), 'utf8')).name, 'Main', 'files back to generation 1');
+  assert.match(cap.text(), /restored\.\nRun `n8c plan` to preview/);
+  assert.doesNotMatch(cap.text(), /does not roll back/);
 });
 
 test('restore rejects an unknown generation', async (t) => {

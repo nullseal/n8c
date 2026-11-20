@@ -10,11 +10,12 @@ const B = 'https://n8n.test/api/v1/workflows';
 
 // A fake fetch that records [method, url, parsed body] and answers with a REAL
 // Response, so an empty 204 rejects .json() exactly as it does against n8n.
-function make(Cls: typeof N8nClientV2, responder: (method: string, url: string) => Reply = () => ({ body: { id: 'NEW' } }), projectId?: string) {
+function make(Cls: typeof N8nClientV2, responder: (method: string, url: string, body?: any) => Reply = () => ({ body: { id: 'NEW' } }), projectId?: string) {
   const calls: Call[] = [];
   const fetchImpl = async (url: string, init: any) => {
-    calls.push([init.method, url, init.body === undefined ? undefined : JSON.parse(init.body)]);
-    const r = responder(init.method, url);
+    const body = init.body === undefined ? undefined : JSON.parse(init.body);
+    calls.push([init.method, url, body]);
+    const r = responder(init.method, url, body);
     const status = r.status ?? 200;
     return new Response(status === 204 ? null : r.text ?? JSON.stringify(r.body ?? {}), { status });
   };
@@ -30,6 +31,9 @@ function throwing(Cls: typeof N8nClientV2, err: unknown): N8nClientV2 {
 // Shaped like the error req() throws for a failed PUT.
 const n8nError = (status: number, body: string) => Object.assign(new Error(`n8n PUT /api/v1/workflows/W1 -> ${status} ${body}`), { status });
 const rejection = (p: Promise<unknown>): Promise<any> => p.then(() => assert.fail('expected a rejection'), (e) => e);
+// n8n 2.0-2.15's answer to a workflow body carrying `description` (live at 2.14.2).
+const REFUSED: Reply = { status: 400, text: '{"message":"request/body must NOT have additional properties"}' };
+const refusesDescription = (_m: string, _u: string, body?: any): Reply => (body && 'description' in body ? REFUSED : { body: { id: 'W1' } });
 const GUIDANCE = /Grant it and re-run `n8c apply` on the SAME saved plan — a fresh `n8c plan` compares against n8n's saved draft and will show no change — or, to deploy without publishing, unpublish the workflow in n8n first AND set `active: false` in its file, then run `n8c pull` to record the version n8n already saved\./;
 
 // ---- Shared behavior: V3 inherits it from V2, so both classes run the same suite.
@@ -85,6 +89,60 @@ for (const [name, Cls] of classes) {
       { id: 'c', active: true },
     ]);
   });
+
+  // n8n 2.0-2.15 refuse `description` in a workflow body in any form (live at 2.14.2).
+  test(`${name}: an update refused for "additional properties" is sent again without description, and later ones leave it out`, async (t) => {
+    const errs: string[] = [];
+    t.mock.method(console, 'error', (...a: unknown[]) => { errs.push(a.join(' ')); });
+    const { client, calls } = make(Cls, refusesDescription);
+    assert.deepEqual(await client.updateWorkflow('W1', { name: 'A', description: '[n8c-managed]', nodes: [] }), { id: 'W1' });
+    await client.updateWorkflow('W2', { name: 'B', description: '[n8c-managed]' });
+    assert.deepEqual(calls, [
+      ['PUT', `${B}/W1`, { name: 'A', description: '[n8c-managed]', nodes: [] }],
+      ['PUT', `${B}/W1`, { name: 'A', nodes: [] }],
+      ['PUT', `${B}/W2`, { name: 'B' }],
+    ]);
+    assert.deepEqual(errs, [], "n8c's own marker is dropped without a warning");
+  });
+
+  test(`${name}: a dropped description with real text warns, naming the workflow, every time`, async (t) => {
+    const errs: string[] = [];
+    t.mock.method(console, 'error', (...a: unknown[]) => { errs.push(a.join(' ')); });
+    const { client } = make(Cls, refusesDescription);
+    await client.updateWorkflow('W1', { name: 'Refunds', description: 'Handles refunds\n[n8c-managed]' });
+    await client.updateWorkflow('W2', { name: 'Orders', description: 'Takes orders' });
+    assert.equal(errs.length, 2);
+    assert.equal(errs[0], '  ⚠ workflow "Refunds" was saved without its description: this n8n refuses workflow descriptions (n8n 2.16 added them). `n8c plan` keeps listing the description as a change until you remove it from the workflow\'s files or upgrade n8n.');
+    assert.match(errs[1], /^ {2}⚠ workflow "Orders" was saved without its description/);
+  });
+
+  test(`${name}: an "additional properties" 400 on a body without description is rethrown as is`, async () => {
+    const { client, calls } = make(Cls, () => REFUSED);
+    const e = await rejection(client.updateWorkflow('W1', { name: 'A' }));
+    assert.equal(e.status, 400);
+    assert.equal(calls.length, 1);
+  });
+
+  test(`${name}: when the retry without description fails too, its error propagates and later calls still send description`, async () => {
+    const { client, calls } = make(Cls, () => REFUSED);
+    const e = await rejection(client.updateWorkflow('W1', { name: 'A', description: 'x' }));
+    assert.equal(e.status, 400);
+    await rejection(client.updateWorkflow('W2', { name: 'B', description: 'y' }));
+    assert.deepEqual(calls.map((c) => 'description' in c[2]), [true, false, true, false]);
+  });
+
+  test(`${name}: any other 400 (e.g. a null description on n8n 2.16+) is not retried`, async () => {
+    const { client, calls } = make(Cls, () => ({ status: 400, text: '{"message":"request/body/description Expected string, received null"}' }));
+    const e = await rejection(client.updateWorkflow('W1', { name: 'A', description: null }));
+    assert.equal(e.status, 400);
+    assert.equal(calls.length, 1);
+  });
+
+  test(`${name}: listWorkflows({ descriptions: true }) fills in descriptions and still maps active`, async () => {
+    const { client, calls } = make(Cls, (m, u) => (u.endsWith('/workflows') ? { body: { data: [{ id: 'a', activeVersionId: 'v1' }] } } : { body: { description: 'from GET' } }));
+    assert.deepEqual(await client.listWorkflows({ descriptions: true }), [{ id: 'a', activeVersionId: 'v1', description: 'from GET', active: true }]);
+    assert.deepEqual(calls.map((c) => `${c[0]} ${c[1]}`), [`GET ${B}`, `GET ${B}/a`]);
+  });
 }
 
 // ---- V2: every n8n 2.x release. /publish, /unpublish and projectId on create only
@@ -127,6 +185,17 @@ for (const { kind, path, scope, create } of kinds) {
     assert.deepEqual(calls.map((c) => c[0]), ['POST', 'PUT'], 'no DELETE');
   });
 
+  if (kind === 'workflow') {
+    // n8n 2.3+ words it differently for a single workflow (live at 2.48.6); credentials
+    // and bulk moves keep "already owning it".
+    test('V2: create workflow treats "same destination it already belongs to" on the move as success and keeps it', async () => {
+      const text = `{"message":"You can't transfer a workflow into the same destination it already belongs to."}`;
+      const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 400, text } : { body: { id: 'NEW' } }), 'PROJ1');
+      assert.deepEqual(await create(client), { id: 'NEW' });
+      assert.deepEqual(calls.map((c) => c[0]), ['POST', 'PUT'], 'no DELETE');
+    });
+  }
+
   test(`V2: create ${kind} whose move fails deletes the new item and throws naming id, project and ${scope}`, async () => {
     const { client, calls } = make(N8nClientV2, (m) => (m === 'PUT' ? { status: 403, text: 'Forbidden' } : m === 'DELETE' ? { body: {} } : { body: { id: 'NEW' } }), 'PROJ1');
     const e = await rejection(create(client));
@@ -162,6 +231,19 @@ for (const { kind, path, scope, create } of kinds) {
     assert.doesNotMatch(e.message, /most likely lacks/);
   });
 }
+
+test('V2: a create refused for "additional properties" is POSTed again without description, then moved', async () => {
+  const { client, calls } = make(N8nClientV2, (m, u, body) => (m === 'PUT' ? { status: 204 } : refusesDescription(m, u, body)), 'PROJ1');
+  assert.deepEqual(await client.createWorkflow({ name: 'X', description: '[n8c-managed]' }), { id: 'W1' });
+  await client.createWorkflow({ name: 'Y', description: '[n8c-managed]' });
+  assert.deepEqual(calls.map((c) => [c[0], c[1], c[2]]), [
+    ['POST', `${API}/api/v1/workflows`, { name: 'X', description: '[n8c-managed]' }],
+    ['POST', `${API}/api/v1/workflows`, { name: 'X' }],
+    ['PUT', `${API}/api/v1/workflows/W1/transfer`, { destinationProjectId: 'PROJ1' }],
+    ['POST', `${API}/api/v1/workflows`, { name: 'Y' }],
+    ['PUT', `${API}/api/v1/workflows/W1/transfer`, { destinationProjectId: 'PROJ1' }],
+  ]);
+});
 
 test('V2: activate -> /activate, deactivate -> /deactivate', async () => {
   const { client, calls } = make(N8nClientV2);
@@ -252,6 +334,27 @@ for (const [name, Cls] of classes) {
       assert.deepEqual(errs, []);
     });
   }
+
+  // What n8n 2.0-2.14 really answer (live at 2.14.2): the path matches
+  // GET /workflows/{id}/{versionId}, so only the method is refused.
+  const notAllowed = { status: 405, text: '{"message":"POST method not allowed"}' };
+
+  test(`${name}: archive 405 (n8n 2.0-2.14) + GET 200 permanently deletes and warns`, async (t) => {
+    const errs: string[] = [];
+    t.mock.method(console, 'error', (...a: unknown[]) => { errs.push(a.join(' ')); });
+    const { client, calls } = make(Cls, (m, u) => (u.endsWith('/archive') ? notAllowed : { body: { id: 'W1' } }));
+    await client.archiveWorkflow('W1');
+    assert.deepEqual(calls.map((c) => [c[0], c[1]]), [['POST', `${B}/W1/archive`], ['GET', `${B}/W1`], ['DELETE', `${B}/W1`]]);
+    assert.deepEqual(errs, ['  ⚠ workflow W1 was permanently deleted because this n8n has no archive endpoint (n8n 2.15+ archives instead).']);
+  });
+
+  test(`${name}: archive 405 + GET 404 rejects with the GET's 404, which apply reads as already deleted`, async () => {
+    const { client, calls } = make(Cls, (m, u) => (u.endsWith('/archive') ? notAllowed : { status: 404, text: '{"message":"Not Found"}' }));
+    const e = await rejection(client.archiveWorkflow('W1'));
+    assert.equal(e.status, 404);
+    assert.match(e.message, /GET \/api\/v1\/workflows\/W1 -> 404/);
+    assert.deepEqual(calls.map((c) => c[0]), ['POST', 'GET']);
+  });
 
   test(`${name}: archive 404 + GET 404 rethrows the original archive error`, async () => {
     const { client, calls } = make(Cls, () => ({ status: 404, text: '{"message":"Not Found"}' }));

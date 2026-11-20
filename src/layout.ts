@@ -126,10 +126,16 @@ export async function readEntity(root: string, kind: string, localId: string, co
     return { metadata, body: { ...rest, nodes, connections, description }, prompts };
   }
   const body = await runApply(join(dir, 'apply.ts'));
-  // Workflows with no nodes/ dir still get metadata.description passed through
-  // to body.description (the n8n workflow field), matching the node branch.
-  if (kind === 'workflows' && body && typeof body === 'object' && metadata.description !== undefined && (body as any).description === undefined) {
-    (body as any).description = metadata.description;
+  if (kind === 'workflows' && body && typeof body === 'object') {
+    const b = body as any;
+    // Workflows with no nodes/ dir still get metadata.description passed through
+    // to body.description (the n8n workflow field), matching the node branch.
+    if (metadata.description !== undefined && b.description === undefined) b.description = metadata.description;
+    // A src/<unit> replaces its target node's code here too, matching the node
+    // branch: `pull` and `restore` write this layout, and unit edits must keep deploying.
+    if (Array.isArray(b.nodes)) {
+      for (const n of b.nodes) if (codeByNode[n.id] !== undefined) n.parameters = { ...n.parameters, jsCode: codeByNode[n.id] };
+    }
   }
   return { metadata, body, prompts: [] };
 }

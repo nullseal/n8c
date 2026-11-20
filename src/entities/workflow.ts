@@ -96,7 +96,8 @@ export const workflow: EntityDescriptor = {
     return mapping;
   },
   async pullFromServer(ctx) {
-    const wfs = await ctx.n8n!.listWorkflows();
+    // n8n's list omits `description`; this asks the client to fetch it per workflow.
+    const wfs = await ctx.n8n!.listWorkflows({ descriptions: true });
     const defs = await ctx.getDefinitions('workflows'); // localId -> n8nId
     const byN8nId = new Map(Object.entries(defs).map(([lid, nid]) => [String(nid), lid]));
     return wfs.map((w: any) => {
@@ -107,7 +108,9 @@ export const workflow: EntityDescriptor = {
         settings: w.settings ?? {},
         meta: { ...(w.meta ?? {}), [META_KEY]: localId },
       };
-      if (w.description !== undefined) body.description = w.description;
+      // n8n reports "no description" as null, and 2.16+ reject a null one on a push
+      // (400 "Expected string, received null"): keep only real text.
+      if (typeof w.description === 'string' && w.description !== '') body.description = w.description;
       if (w.nodeGroups) body.nodeGroups = w.nodeGroups;
       if (w.staticData) body.staticData = w.staticData;
       if (w.pinData) body.pinData = w.pinData;

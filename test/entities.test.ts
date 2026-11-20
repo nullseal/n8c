@@ -85,6 +85,22 @@ test('workflow.pullFromServer carries description, nodeGroups, staticData and pi
   assert.deepEqual(row.body.pinData, { p: 1 });
 });
 
+// n8n's list has no description (only GET by id does, null when unset), and n8n
+// 2.16+ answers 400 to `description: null` in a create/update body.
+test('workflow.pullFromServer lists with descriptions and keeps only a non-empty one', async () => {
+  let asked: any;
+  const c: any = { getDefinitions: async () => ({}), n8n: { listWorkflows: async (opts: any) => { asked = opts; return [
+    { id: 'W1', name: 'None', nodes: [], connections: {}, description: null },
+    { id: 'W2', name: 'Empty', nodes: [], connections: {}, description: '' },
+    { id: 'W3', name: 'UI', nodes: [], connections: {}, description: 'Described in the n8n UI' },
+  ]; } } };
+  const rows = await workflow.pullFromServer!(c);
+  assert.deepEqual(asked, { descriptions: true });
+  assert.equal('description' in rows[0].body, false);
+  assert.equal('description' in rows[1].body, false);
+  assert.equal(rows[2].body.description, 'Described in the n8n UI');
+});
+
 test('workflow.pushToServer: update PUT omits staticData, create POST keeps it', async () => {
   const updates: any[] = [];
   const creates: any[] = [];

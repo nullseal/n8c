@@ -16,7 +16,7 @@ export const MCP_TOOLS = [
     inputSchema: { type: 'object', properties: { message: { type: 'string', description: 'release note shown in n8c_list' }, ...env }, additionalProperties: false } },
   { name: 'n8c_list', description: 'List releases (generations), newest first.',
     inputSchema: { type: 'object', properties: { full: { type: 'boolean' }, ...env }, additionalProperties: false } },
-  { name: 'n8c_restore', description: 'Roll every entity kind back to a generation (from n8c_list). apply=true deploys it now.',
+  { name: 'n8c_restore', description: 'Roll every entity kind back to a generation (from n8c_list); src/ unit code is not rolled back. apply=true deploys it now.',
     inputSchema: { type: 'object', properties: { generation: { type: 'string' }, apply: { type: 'boolean' }, ...env }, required: ['generation'], additionalProperties: false } },
 ];
 

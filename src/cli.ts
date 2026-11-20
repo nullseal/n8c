@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { readFileSync, writeFileSync, realpathSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { buildContext } from './context.ts';
 import { checksum } from './checksum.ts';
@@ -9,6 +9,7 @@ import { entityByKind } from './entities/index.ts';
 import { listEntity } from './engine/list.ts';
 import { pullEntity, isKindChanged, commitPullGeneration } from './engine/pull.ts';
 import { exportVersion, exportDocs } from './engine/transfer.ts';
+import { buildSources, unitOverrides } from './engine/build.ts';
 import { createEntity } from './engine/generate.ts';
 import { initProject, initDb } from './engine/init.ts';
 import { verifyBeforeApply, refreshedServerFacts } from './engine/verify.ts';
@@ -129,6 +130,15 @@ function printSecretWarnings(warnings: string[]): void {
   if (!warnings.length) return;
   console.error(`  ⚠ possible hardcoded secret(s) in exported files (n8c/ is committed — scrub & rotate):`);
   for (const w of warnings) console.error(`    - ${w}`);
+}
+
+// After a restore: the nodes whose restored code a src/<unit> replaces (unitOverrides).
+function printUnitOverrides(nodes: string[]): void {
+  if (!nodes.length) return;
+  const one = nodes.length === 1;
+  console.log(notice(`! ${nodes.length} restored ${one ? 'node takes its' : 'nodes take their'} code from a src/ unit, which restore does not roll back — n8n gets the unit's current code:`));
+  for (const n of nodes) console.log(`    ${n}`);
+  console.log(`  Restore the unit's source too (e.g. with git) to roll that code back, then plan and apply.`);
 }
 
 export interface GenerationMember { kind: string; checksum: string; }
@@ -588,6 +598,12 @@ export function buildProgram(): Command {
           if (!versions.some((v: any) => v.versionId === vid)) continue; // not part of this generation
           printSecretWarnings(await exportVersion(store, entityByKind[kind], root, vid, ctx));
           console.log(`restored ${KIND_TO_SINGULAR[kind] ?? kind} → files.`);
+          if (kind === 'workflows') {
+            // A unit that does not build must not block a rollback of the files: plan
+            // reports the build error, and until it builds there is nothing to compare.
+            const units = await buildSources(dirname(root)).catch(() => undefined);
+            if (units) printUnitOverrides(unitOverrides(await store.getVersion(kind, vid), units.codeByNode));
+          }
         }
         console.log(`generation ${hash(ref)} (${vid}) restored.`);
         if (!opts.apply) { console.log('Run `n8c plan` to preview, `n8c apply` to deploy.'); return; }

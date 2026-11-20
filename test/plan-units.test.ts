@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '../src/store/memory.ts';
 import { computePlan } from '../src/engine/state.ts';
 import { applyFromState } from '../src/engine/apply-state.ts';
+import { pullEntity } from '../src/engine/pull.ts';
+import { exportDocs } from '../src/engine/transfer.ts';
+import { workflow } from '../src/entities/workflow.ts';
 
 // A project code unit (`src/<unit>/`, metadata.target = nodeId) is inlined into its
 // Code node when apply builds the workflow. `plan` must diff that SAME body against
@@ -97,5 +100,29 @@ test('a deployed src/<unit> plans as noop until its source changes', async () =>
     const state = await plan(store, nroot, n8n);
     assert.equal(w1(state).action, 'update');
     assert.deepEqual(w1(state).nodes, [{ name: 'Code', status: 'changed' }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// `pull` (and `restore`) rewrite a workflow into the single-file layout. Before the
+// fix the unit was inlined only in the nodes/ layout, so from then on a unit edit
+// planned as noop and never deployed (seen live at 2.48.6 and 3.3.0).
+test('after a pull rewrites the workflow into one apply.ts, a unit edit still plans and deploys', async () => {
+  const { root, nroot } = project();
+  try {
+    writeUnit(root, 'return [{ json: { v: 1 } }];\n');
+    const store = new MemoryStore(); const n8n = fakeN8n();
+    const ctx = ctxOf(store, n8n);
+    await applyFromState(store, nroot, ctx, await plan(store, nroot, n8n));
+    const pulled = await pullEntity(store, workflow, nroot, ctx);
+    await exportDocs(workflow, nroot, pulled.docs, ctx);
+    assert.ok(existsSync(join(nroot, 'workflows', 'w1', 'apply.ts')) && !existsSync(join(nroot, 'workflows', 'w1', 'nodes')), 'pull wrote the single-file layout');
+    assert.equal(w1(await plan(store, nroot, n8n)).action, 'noop', 'in sync right after the pull');
+
+    writeUnit(root, 'return [{ json: { v: 2 } }];\n');
+    const state = await plan(store, nroot, n8n);
+    assert.equal(w1(state).action, 'update', 'the unit edit is visible to plan');
+    assert.deepEqual(w1(state).nodes, [{ name: 'Code', status: 'changed' }]);
+    await applyFromState(store, nroot, ctx, state);
+    assert.match(serverCode(n8n), /v: 2/, 'the unit code reached n8n');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

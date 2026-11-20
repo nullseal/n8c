@@ -84,8 +84,14 @@ export async function exportDocs(desc: EntityDescriptor, root: string, docs: imp
       for (const f of scanWorkflowSecrets(d.body)) warnings.push(`${d.name} (${d.localId}) → ${f}`);
       rmSync(dir, { recursive: true, force: true }); // clean before writing
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'metadata.json'), JSON.stringify({ name: d.name }, null, 2) + '\n');
-      writeFileSync(join(dir, 'apply.ts'), materializeWorkflowSource(d.body, n8nIdToLocal));
+      // The description goes to metadata.json, as in the nodes/ layout: the flat reader
+      // passes it through to the body, and it stays editable there. In apply.ts it would
+      // win over metadata.json, so an edit made in metadata.json would silently do nothing.
+      const { description, ...body } = d.body as any;
+      const meta: any = { name: d.name };
+      if (typeof description === 'string' && description !== '') meta.description = description;
+      writeFileSync(join(dir, 'metadata.json'), JSON.stringify(meta, null, 2) + '\n');
+      writeFileSync(join(dir, 'apply.ts'), materializeWorkflowSource(body, n8nIdToLocal));
       // environment.json: the credentials this workflow uses, by env-neutral
       // localId + name — a committed record of the credentials this workflow uses.
       if (Object.keys(used).length) writeFileSync(join(dir, 'environment.json'), JSON.stringify({ credentials: used }, null, 2) + '\n');

@@ -56,6 +56,51 @@ test('pagination uses & when projectId query present; non-array data tolerated',
   assert.equal(calls[1][1], 'https://n8n.test/api/v1/workflows?projectId=P%2F1&cursor=C1');
 });
 
+// n8n's workflow list never includes `description` (live at 2.14.2, 2.48.6 and
+// 3.3.0); only GET /workflows/{id} does, as null when the workflow has none.
+test('listWorkflows({ descriptions: true }) fills in description from GET /workflows/{id}, only for rows without it', async () => {
+  const { client, calls } = make((url) => {
+    if (url.endsWith('/api/v1/workflows')) return { body: { data: [{ id: 'a' }, { id: 'b', description: 'listed' }, { id: 'c' }] } };
+    const id = url.split('/').pop();
+    return { body: { id, description: id === 'a' ? 'from GET' : null } };
+  });
+  const wfs = await client.listWorkflows({ descriptions: true });
+  assert.deepEqual(wfs, [{ id: 'a', description: 'from GET' }, { id: 'b', description: 'listed' }, { id: 'c', description: null }]);
+  assert.deepEqual(calls.slice(1).map((c) => `${c[0]} ${c[1]}`).sort(), ['GET https://n8n.test/api/v1/workflows/a', 'GET https://n8n.test/api/v1/workflows/c']);
+});
+
+test('listWorkflows() without the option makes no per-workflow GET', async () => {
+  const { client, calls } = make(() => ({ body: { data: [{ id: 'a' }, { id: 'b' }] } }));
+  assert.deepEqual(await client.listWorkflows(), [{ id: 'a' }, { id: 'b' }]);
+  assert.equal(calls.length, 1);
+});
+
+test('listWorkflows({ descriptions: true }) keeps a row as listed when its GET 404s (deleted since the list)', async () => {
+  const { client } = make((url) => (url.endsWith('/workflows') ? { body: { data: [{ id: 'a' }, { id: 'gone' }] } }
+    : url.endsWith('/gone') ? { ok: false, status: 404, text: 'Not Found' } : { body: { description: 'x' } }));
+  assert.deepEqual(await client.listWorkflows({ descriptions: true }), [{ id: 'a', description: 'x' }, { id: 'gone' }]);
+});
+
+test('listWorkflows({ descriptions: true }) rejects when a GET fails with anything but 404', async () => {
+  const { client } = make((url) => (url.endsWith('/workflows') ? { body: { data: [{ id: 'a' }] } } : { ok: false, status: 500, text: 'boom' }));
+  await assert.rejects(() => client.listWorkflows({ descriptions: true }), (e: any) => e.status === 500 && /GET \/api\/v1\/workflows\/a -> 500 boom/.test(e.message));
+});
+
+test('listWorkflows({ descriptions: true }) runs at most 8 GETs at once and fetches every row', async () => {
+  let inFlight = 0; let peak = 0; const fetched: string[] = [];
+  const fetchImpl = async (url: string) => {
+    if (url.endsWith('/workflows')) return { ok: true, status: 200, json: async () => ({ data: Array.from({ length: 20 }, (_, i) => ({ id: String(i) })) }) } as any;
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 2));
+    inFlight--; fetched.push(url.split('/').pop()!);
+    return { ok: true, status: 200, json: async () => ({ description: null }) } as any;
+  };
+  const wfs = await new TestClient('https://n8n.test', 'K', fetchImpl as any).listWorkflows({ descriptions: true });
+  assert.equal(wfs.length, 20);
+  assert.equal(fetched.length, 20);
+  assert.equal(peak, 8);
+});
+
 test('empty projectId is treated as unset', async () => {
   const { client, calls } = make(() => ({ body: { data: [] } }), '');
   await client.listWorkflows();

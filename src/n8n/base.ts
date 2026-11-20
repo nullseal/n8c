@@ -1,5 +1,8 @@
 import { debugRequest, debugResponse } from '../debug.ts';
 
+// How many GET /workflows/{id} listWorkflows({ descriptions: true }) runs at once.
+const DESCRIPTION_FETCHES = 8;
+
 // Version-independent plumbing shared by the n8n 2.x / 3.x API clients.
 // Subclasses supply only the verbs whose behavior differs between versions.
 export abstract class N8nClientBase {
@@ -57,9 +60,32 @@ export abstract class N8nClientBase {
 
   // Concrete (subclasses override and call super): an abstract method cannot be
   // reached through `super`, which V2's normalizing override needs.
-  async listWorkflows(): Promise<any[]> {
+  //
+  // n8n's workflow list never includes `description` (live at 2.14.2, 2.48.6 and
+  // 3.3.0); GET /workflows/{id} does, as null when there is none. `descriptions`
+  // completes every row that lacks the key from that GET, for pull and plan.
+  // Callers that need only ids/updatedAt/active (the drift baseline) leave it off.
+  async listWorkflows(opts: { descriptions?: boolean } = {}): Promise<any[]> {
     // scope to the configured project so pull/plan don't mix other projects.
-    return this.reqAll(this.projectId ? `/api/v1/workflows?projectId=${encodeURIComponent(this.projectId)}` : '/api/v1/workflows');
+    const rows = await this.reqAll(this.projectId ? `/api/v1/workflows?projectId=${encodeURIComponent(this.projectId)}` : '/api/v1/workflows');
+    if (opts.descriptions) await this.fillDescriptions(rows);
+    return rows;
+  }
+  async getWorkflow(id: string): Promise<any> { return this.req('GET', `/api/v1/workflows/${id}`); }
+
+  // One GET per row, DESCRIPTION_FETCHES at a time. A 404 means the workflow was
+  // deleted after the list was read: its row stays as listed. Any other error rejects.
+  private async fillDescriptions(rows: any[]): Promise<void> {
+    const todo = rows.filter((w) => !('description' in w));
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const w = todo[next++];
+        try { w.description = (await this.getWorkflow(String(w.id))).description; }
+        catch (e: any) { if (e?.status !== 404) throw e; }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(DESCRIPTION_FETCHES, todo.length) }, worker));
   }
   async updateWorkflow(id: string, body: unknown): Promise<any> { return this.req('PUT', `/api/v1/workflows/${id}`, body); }
   // Moves a workflow to another project. n8n answers 204 with no body.

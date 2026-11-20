@@ -1,4 +1,5 @@
 import { N8nClientBase } from './base.ts';
+import { stripManagedMarker } from '../layout.ts';
 
 // For n8n 2.x. Its workflow calls use only endpoints every 2.x release serves:
 // POST /activate and /deactivate, and create-then-transfer for a project, for
@@ -10,8 +11,34 @@ import { N8nClientBase } from './base.ts';
 // listWorkflows from here.
 export class N8nClientV2 extends N8nClientBase {
   async createWorkflow(body: unknown): Promise<{ id: string }> {
-    return this.createThenMove('workflow', 'workflow:move', await this.req('POST', '/api/v1/workflows', body),
+    return this.createThenMove('workflow', 'workflow:move', await this.sendWorkflow(body, (b) => this.req('POST', '/api/v1/workflows', b)),
       (id, project) => this.transferWorkflow(id, project), (id) => this.deleteWorkflow(id));
+  }
+
+  // n8n 2.0-2.15 have no workflow descriptions: their schema refuses the key in any
+  // form (text, "" or null) with 400 "request/body must NOT have additional
+  // properties" (live at 2.14.2). n8c sends one for every workflow built from a
+  // nodes/ folder (its [n8c-managed] marker), so on that 400 the body is sent again
+  // without it, and every later call on this client leaves it out up front. If the
+  // retry fails as well, some other key was refused: that error propagates.
+  private descriptionRefused = false;
+  private async sendWorkflow(body: any, send: (body: unknown) => Promise<any>): Promise<any> {
+    if (!body || typeof body !== 'object' || !('description' in body)) return send(body);
+    const { description, ...rest } = body;
+    if (!this.descriptionRefused) {
+      try {
+        return await send(body);
+      } catch (e: any) {
+        if (e?.status !== 400 || !/request\/body must NOT have additional properties/.test(e.message)) throw e;
+      }
+    }
+    const result = await send(rest);
+    this.descriptionRefused = true;
+    // The marker alone is n8c's own text: dropping it needs no word.
+    if (stripManagedMarker(description) !== '') {
+      console.error(`  ⚠ workflow "${body.name}" was saved without its description: this n8n refuses workflow descriptions (n8n 2.16 added them). \`n8c plan\` keeps listing the description as a change until you remove it from the workflow's files or upgrade n8n.`);
+    }
+    return result;
   }
   // POST /credentials honors projectId only from 2.18; earlier 2.x silently creates
   // the credential in the API key's personal project. Create, then move, on every 2.x.
@@ -25,7 +52,8 @@ export class N8nClientV2 extends N8nClientBase {
   // orphan silently. Recording the mapping instead would make the retry update an item
   // stuck in the wrong project. n8n answers 400 when the item already belongs to the
   // target project (the key's own personal project): there is nothing to move, so
-  // that counts as success.
+  // that counts as success. A credential's 400 says "…already owning it"; from n8n 2.3
+  // a single workflow's says "…the same destination it already belongs to".
   private async createThenMove<T extends { id?: unknown }>(
     kind: string, scope: string, created: T,
     move: (id: string, projectId: string) => Promise<unknown>, remove: (id: string) => Promise<unknown>,
@@ -36,7 +64,7 @@ export class N8nClientV2 extends N8nClientBase {
     try {
       await move(id, project);
     } catch (moveError: any) {
-      if (moveError?.status === 400 && /already owning it/.test(moveError.message)) return created;
+      if (moveError?.status === 400 && /already owning it|same destination it already belongs to/.test(moveError.message)) return created;
       // 403 is a missing scope; anything else (e.g. 400 for a project that does not exist) is not.
       const hint = moveError?.status === 403
         ? `The API key most likely lacks the ${scope} scope.`
@@ -60,7 +88,7 @@ export class N8nClientV2 extends N8nClientBase {
 
   async updateWorkflow(id: string, body: unknown): Promise<any> {
     try {
-      return await super.updateWorkflow(id, body);
+      return await this.sendWorkflow(body, (b) => super.updateWorkflow(id, b));
     } catch (e: any) {
       // A PUT on a published workflow also re-publishes it. When n8n refuses that
       // publish for a missing permission it still keeps the new version as a draft,
@@ -76,20 +104,22 @@ export class N8nClientV2 extends N8nClientBase {
     }
   }
 
-  // POST /archive exists only from n8n 2.15; on 2.0-2.14 the route is missing, so it
-  // answers 404 although the workflow exists. Tell the two 404s apart with a GET.
+  // POST /archive exists only from n8n 2.15. On 2.0-2.14 it answers 405 "POST method
+  // not allowed" (the path matches GET /workflows/{id}/{versionId}) whether or not the
+  // workflow exists; a 404 is treated the same way. A GET tells the cases apart.
   async archiveWorkflow(id: string): Promise<any> {
     try {
       return await super.archiveWorkflow(id);
     } catch (archiveError: any) {
-      if (archiveError?.status !== 404) throw archiveError;
+      if (archiveError?.status !== 404 && archiveError?.status !== 405) throw archiveError;
       // GET /workflows/{id} exists in every 2.x. It 404s too: the workflow is really
-      // gone (apply reads the original 404 as "already deleted"). Any other GET
-      // failure propagates as itself, never as the archive 404.
+      // gone, and a 404 reaches apply, which reads it as "already deleted" (the
+      // archive's own 404 when it was one, else the GET's). Any other GET failure
+      // propagates as itself, never as the archive error.
       try {
-        await this.req('GET', `/api/v1/workflows/${id}`);
+        await this.getWorkflow(id);
       } catch (getError: any) {
-        throw getError?.status === 404 ? archiveError : getError;
+        throw getError?.status === 404 && archiveError.status === 404 ? archiveError : getError;
       }
       // The workflow exists, so this n8n has no archive endpoint. DELETE there is a
       // forced, permanent delete; there is nothing softer on those releases.
@@ -108,8 +138,8 @@ export class N8nClientV2 extends N8nClientBase {
     }
   }
 
-  async listWorkflows(): Promise<any[]> {
-    const rows = await super.listWorkflows();
+  async listWorkflows(opts: { descriptions?: boolean } = {}): Promise<any[]> {
+    const rows = await super.listWorkflows(opts);
     // 2.x: `active` is deprecated; activeVersionId is the truth. Normalize so
     // plan/pull never read the deprecated field on 2.x/3.x.
     return rows.map((w: any) => ('activeVersionId' in w ? { ...w, active: w.activeVersionId != null } : w));

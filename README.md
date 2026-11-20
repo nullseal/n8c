@@ -189,7 +189,7 @@ The **SQLite** backend keeps the same data in four fixed tables in its single fi
 
 `apply` executes the frozen plan — pushing to n8n *before* committing the DB. `apply` refuses a stale plan (files changed since `plan`). Use `n8c apply --force` to compute a fresh plan and apply it in one step, Terraform-style.
 
-Code-node units under `src/<unit>` are inlined into their target nodes *before* the diff, so `plan` shows exactly the code `apply` will push — an edit that lives only in a unit still plans as a changed workflow.
+Code-node units under `src/<unit>` are inlined into their target nodes *before* the diff, so `plan` shows exactly the code `apply` will push — an edit that lives only in a unit still plans as a changed workflow. This holds in both workflow layouts, including the single `apply.ts` that `pull` and `restore` write. A unit is your repo's source, not part of any release, so `restore` cannot roll its code back: n8n gets the unit's current code, and `restore` names each node where that differs from the restored code. Restore the unit's source too (e.g. with git) to roll it back.
 
 `apply` needs an n8n connection (`N8N_BASE` + `N8N_API_KEY`) whenever the plan changes a workflow or credential: without one it stops before writing anything, rather than recording a release that was never deployed. If an `apply` fails partway, re-run it on the same saved plan: rows it already applied are skipped (a credential is never created twice), and only the failed or unreached ones run again.
 
@@ -208,6 +208,10 @@ A workflow is `changed` when any of these differ from the server: a node, the
 `active` flag, the workflow `name`, `connections`, `description`, `nodeGroups`, or a
 `settings` key your files actually set. `plan` names the parts that differ in
 parentheses, e.g. `~ workflow  [id]  MKD_ Orders  (name, load_prompts)`.
+n8n's workflow list has no `description`, so `plan` and `pull` read each workflow
+once more (`GET /workflows/{id}`, 8 at a time) to compare and keep it; `pull` writes
+it to the workflow's `metadata.json`. In a workflow without a `nodes/` folder, a
+description deleted from the files is left as it is on n8n: set it to `""` to clear it.
 
 Two things are deliberately never a reason to plan an update: `staticData` (n8n's
 runtime scratch space, which it rewrites between executions; n8c sends it only when
@@ -417,8 +421,10 @@ before 2.33 does not have.
 
 `"2"` works with n8n 2.x. Workflows themselves (create, update, list, activate, transfer) work on every 2.x
 release, and so does `--destroy`: n8n 2.15 and later archive the workflow (recoverable in n8n), while 2.0 to 2.14
-have no archive endpoint, so `apply` permanently deletes it there and prints a warning. Some other features need
-a later release:
+have no archive endpoint, so `apply` permanently deletes it there and prints a warning. n8n 2.0 to 2.15 have no
+workflow description and refuse a workflow that carries one, so n8c sends it again without the description: its
+own `[n8c-managed]` marker is dropped silently, while a description you wrote gets a warning naming the workflow,
+and `plan` keeps listing it as a change until you remove it or upgrade. Some other features need a later release:
 
 - credential updates (`PATCH /credentials/{id}`): n8n 2.4.0 or later;
 - credential listing (`GET /credentials`, used by `pull`, `plan` and apply's drift check): n8n 2.8.0 or later.

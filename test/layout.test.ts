@@ -44,6 +44,40 @@ test('a comment-only Code node source does not set parameters.jsCode; real code 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// `pull` and `restore` write this single-file layout. Before the fix a src/<unit> was
+// inlined only in the nodes/ layout, so unit edits stopped deploying after either.
+test('flat workflow: a src/<unit> built for a node replaces its jsCode, as in the nodes/ layout', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    const wf = join(root, 'workflows', 'flat');
+    mkdirSync(wf, { recursive: true });
+    writeFileSync(join(wf, 'metadata.json'), JSON.stringify({ name: 'f' }));
+    const nodes = [
+      { id: 'node-1', name: 'Shape', type: 'n8n-nodes-base.code', parameters: { jsCode: 'return [] // pulled', mode: 'runOnceForAllItems' } },
+      { id: 'node-2', name: 'Bare', type: 'n8n-nodes-base.code' },
+      { id: 'node-3', name: 'Other', type: 'n8n-nodes-base.noOp', parameters: {} },
+    ];
+    writeFileSync(join(wf, 'apply.ts'), `export default () => (${JSON.stringify({ name: 'f', nodes, connections: {} })});\n`);
+    const { body } = await readEntity(root, 'workflows', 'flat', { 'node-1': 'return items // src/shape', 'node-2': 'return [] // src/bare' }) as any;
+    assert.deepEqual(body.nodes.map((n: any) => n.parameters), [
+      { jsCode: 'return items // src/shape', mode: 'runOnceForAllItems' },
+      { jsCode: 'return [] // src/bare' },
+      {},
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('flat workflow: a body without a nodes array reads as written, units or not', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'n8c-'));
+  try {
+    const wf = join(root, 'workflows', 'flat');
+    mkdirSync(wf, { recursive: true });
+    writeFileSync(join(wf, 'metadata.json'), JSON.stringify({ name: 'f' }));
+    writeFileSync(join(wf, 'apply.ts'), "export default { name: 'f', connections: {} };\n");
+    assert.deepEqual(((await readEntity(root, 'workflows', 'flat', { n1: 'x' })) as any).body, { name: 'f', connections: {} });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('flat workflow: metadata.description passes through to the body unless the body has its own', async () => {
   const root = mkdtempSync(join(tmpdir(), 'n8c-'));
   try {
